@@ -194,12 +194,20 @@
     NSArray *requiredGameFiles = @[@"abc.mkf", @"ball.mkf", @"data.mkf", @"f.mkf", @"fbp.mkf", @"fire.mkf", @"gop.mkf", @"m.msg", @"map.mkf", @"mgo.mkf", @"pat.mkf", @"rgm.mkf", @"rng.mkf", @"sss.mkf", @"word.dat"];
     NSArray *optionalAudioFiles = @[@"voc.mkf", @"sounds.mkf", @"midi.mkf", @"mus.mkf"];
     NSString *basePath = [NSString stringWithUTF8String:UTIL_BasePath()];
+    NSString *savePath = [NSString stringWithUTF8String:UTIL_SavePath()];
     allFiles = [[NSFileManager defaultManager] subpathsOfDirectoryAtPath:basePath error:nil];
-    for( NSString *filename in allFiles ) {
+    NSArray *docFiles = [[NSFileManager defaultManager] subpathsOfDirectoryAtPath:savePath error:nil];
+    NSMutableArray *combinedScan = [NSMutableArray arrayWithArray:(allFiles ?: @[])];
+    for (NSString *df in (docFiles ?: @[])) {
+        if (![combinedScan containsObject:df]) [combinedScan addObject:df];
+    }
+    for( NSString *filename in combinedScan ) {
         BOOL isDirectory = NO;
         NSString* fullPath = [basePath stringByAppendingPathComponent:filename];
-        [[NSFileManager defaultManager] fileExistsAtPath:fullPath
-                                             isDirectory: &isDirectory];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:fullPath isDirectory:&isDirectory]) {
+            fullPath = [savePath stringByAppendingPathComponent:filename];
+            [[NSFileManager defaultManager] fileExistsAtPath:fullPath isDirectory:&isDirectory];
+        }
         if( [[filename lastPathComponent] hasPrefix:@"._"] || isDirectory )
             continue;
         if( [self includedInList:langpackExtensionList name:filename.pathExtension] )

@@ -178,7 +178,7 @@ PAL_Shutdown(
    PAL_FreeGlobals();
 
    g_exit_code = exit_code;
-#if !__EMSCRIPTEN__ && SDL_MAJOR_VERSION < 3
+#if !__EMSCRIPTEN__ && (SDL_MAJOR_VERSION < 3 || defined(__IOS__))
    longjmp(g_exit_jmp_buf, 1);
 #else
    SDL_Quit();
@@ -503,7 +503,7 @@ main(
    UTIL_Platform_Startup(argc,argv);
 #endif
 
-#if !__EMSCRIPTEN__ && SDL_MAJOR_VERSION < 3
+#if !__EMSCRIPTEN__ && (SDL_MAJOR_VERSION < 3 || defined(__IOS__))
    if (setjmp(g_exit_jmp_buf) != 0)
    {
 	   // A longjmp is made, should exit here

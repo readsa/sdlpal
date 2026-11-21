@@ -46,7 +46,11 @@
 static const ConfigItem gConfigItems[PALCFG_ALL_MAX] = {
 	{ PALCFG_FULLSCREEN,        PALCFG_BOOLEAN,  "FullScreen",        10, MAKE_BOOLEAN(FALSE,                         FALSE,                 TRUE) },
 	{ PALCFG_KEEPASPECTRATIO,   PALCFG_BOOLEAN,  "KeepAspectRatio",   15, MAKE_BOOLEAN(TRUE,                          FALSE,                 TRUE) },
+#ifdef __IOS__
+	{ PALCFG_LAUNCHSETTING,     PALCFG_BOOLEAN,  "LaunchSetting",     13, MAKE_BOOLEAN(FALSE,                         FALSE,                 TRUE) },
+#else
 	{ PALCFG_LAUNCHSETTING,     PALCFG_BOOLEAN,  "LaunchSetting",     13, MAKE_BOOLEAN(PAL_HAS_CONFIG_PAGE,           FALSE,                 TRUE) },
+#endif
 	{ PALCFG_STEREO,            PALCFG_BOOLEAN,  "Stereo",             6, MAKE_BOOLEAN(TRUE,                          FALSE,                 TRUE) },                  // Default for stereo audio
 	{ PALCFG_USESURROUNDOPL,    PALCFG_BOOLEAN,  "UseSurroundOPL",    14, MAKE_BOOLEAN(TRUE,                          FALSE,                 TRUE) },                  // Default for using surround opl
 	{ PALCFG_ENABLEKEYREPEAT,   PALCFG_BOOLEAN,  "EnableKeyRepeat",   15, MAKE_BOOLEAN(FALSE,                         FALSE,                 TRUE) },
@@ -565,7 +569,11 @@ PAL_LoadConfig(
 	//
 	// Set configurable global options
 	//
+#ifdef __IOS__
+	if (!gConfig.pszSavePath) gConfig.pszSavePath = strdup(PAL_SAVE_PREFIX);
+#else
 	if (!gConfig.pszSavePath) gConfig.pszSavePath = gConfig.pszGamePath ? strdup(gConfig.pszGamePath) : strdup(PAL_SAVE_PREFIX);
+#endif
 	if (!gConfig.pszGamePath) gConfig.pszGamePath = strdup(PAL_PREFIX);
     if (!gConfig.pszShaderPath) gConfig.pszShaderPath = strdup(gConfig.pszGamePath);
 	gConfig.eMusicType = eMusicType;
@@ -624,7 +632,10 @@ PAL_LoadConfig(
         gConfig.fEnableGLSL = FALSE;
     }
 
-	if (gConfig.eMIDISynth != SYNTH_NATIVE && !UTIL_IsFileExist(gConfig.pszSoundBank)) {
+	if (gConfig.eMIDISynth != SYNTH_NATIVE &&
+	    !UTIL_IsFileExist(gConfig.pszSoundBank) &&
+	    !(gConfig.pszSoundBank && gConfig.pszSavePath && UTIL_IsFileExist(UTIL_GetFullPathName(PAL_BUFFER_SIZE_ARGS(0), gConfig.pszSavePath, gConfig.pszSoundBank))) &&
+	    !(gConfig.pszSoundBank && gConfig.pszGamePath && UTIL_IsFileExist(UTIL_GetFullPathName(PAL_BUFFER_SIZE_ARGS(0), gConfig.pszGamePath, gConfig.pszSoundBank)))) {
 		UTIL_LogOutput(LOGLEVEL_ERROR, "SoftSynth enabled but no valid soundbank file specified. Fallback to native-midi");
 		gConfig.eMIDISynth = SYNTH_NATIVE;
 	}

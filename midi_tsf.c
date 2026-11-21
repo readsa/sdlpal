@@ -211,17 +211,30 @@ TSF_Init(
 		player->iMusic = -1;
 		player->fLoop = FALSE;
 
-		if (!player->pTinySoundFont)
+		if (!player->pTinySoundFont && gConfig.pszSoundBank && gConfig.pszSoundBank[0])
 		{
-			player->pTinySoundFont = tsf_load_filename(UTIL_IsAbsolutePath(gConfig.pszSoundBank) ? gConfig.pszSoundBank : UTIL_GetFullPathName(PAL_BUFFER_SIZE_ARGS(0), gConfig.pszGamePath, gConfig.pszSoundBank));
-			tsf_channel_set_bank_preset(player->pTinySoundFont, 9, 128, 0);
-			SDL_AudioSpec* pSpec = AUDIO_GetDeviceSpec();
-			tsf_set_output(player->pTinySoundFont, TSF_STEREO_INTERLEAVED, pSpec->freq, 0.0f);
-			tsf_set_volume(player->pTinySoundFont, 1.0);
+			const char *sbPath = UTIL_IsAbsolutePath(gConfig.pszSoundBank)
+				? gConfig.pszSoundBank
+				: UTIL_GetFullPathName(PAL_BUFFER_SIZE_ARGS(0), gConfig.pszSavePath, gConfig.pszSoundBank);
+			player->pTinySoundFont = tsf_load_filename(sbPath);
+			if (!player->pTinySoundFont && !UTIL_IsAbsolutePath(gConfig.pszSoundBank))
+			{
+				sbPath = UTIL_GetFullPathName(PAL_BUFFER_SIZE_ARGS(0), gConfig.pszGamePath, gConfig.pszSoundBank);
+				player->pTinySoundFont = tsf_load_filename(sbPath);
+			}
+			if (player->pTinySoundFont)
+			{
+				tsf_channel_set_bank_preset(player->pTinySoundFont, 9, 128, 0);
+				SDL_AudioSpec* pSpec = AUDIO_GetDeviceSpec();
+				tsf_set_output(player->pTinySoundFont, TSF_STEREO_INTERLEAVED, pSpec->freq, 0.0f);
+				tsf_set_volume(player->pTinySoundFont, 1.0);
+			}
 		}
 		if (!player->pTinySoundFont)
 		{
-			TerminateOnError("Could not load SoundFont\n");
+			UTIL_LogOutput(LOGLEVEL_WARNING, "TinySoundFont: Could not load SoundFont, falling back to native MIDI.\n");
+			free(player);
+			gConfig.eMIDISynth = SYNTH_NATIVE;
 			return NULL;
 		}
 	}

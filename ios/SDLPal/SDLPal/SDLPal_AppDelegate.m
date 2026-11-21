@@ -52,6 +52,13 @@ int sdlpal_main(int argc, char **argv)
 
     /* Give over control to run loop, SDLPalAppDelegate will handle most things from here */
     @autoreleasepool {
+        NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+        if (![ud boolForKey:@"SDLPal_RecoverHUD_v3"]) {
+            [ud setBool:NO forKey:@"SDLPal_ShowPerfHUD"];
+            [ud synchronize];
+        }
+        BOOL showMetalHud = [ud boolForKey:@"SDLPal_ShowPerfHUD"];
+        setenv("MTL_HUD_ENABLED", showMetalHud ? "1" : "0", 1);
         UIApplicationMain(argc, argv, nil, [SDLPalAppDelegate getAppDelegateClassName]);
     }
 
@@ -114,17 +121,31 @@ int sdlpal_main(int argc, char **argv)
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
-    // iOS Files app will not show other app with no file inside documents. Create placeholder if needed.
     NSFileManager *fileMgr = [NSFileManager defaultManager];
-    NSString *docPath = [NSString stringWithUTF8String:UTIL_BasePath()];
-    NSString *placeholderPath =[NSString stringWithFormat:@"%@/placeholder", docPath];
+    NSString *docPath = [NSString stringWithUTF8String:UTIL_SavePath()];
+    NSString *bundleGamePath = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@"GameData"];
+
+    // Seed initial .rpg save files from bundled GameData if not already in Documents
+    if ([fileMgr fileExistsAtPath:bundleGamePath]) {
+        NSArray *bundleFiles = [fileMgr contentsOfDirectoryAtPath:bundleGamePath error:nil];
+        for (NSString *fname in bundleFiles) {
+            if ([[fname.pathExtension lowercaseString] isEqualToString:@"rpg"]) {
+                NSString *dst = [docPath stringByAppendingPathComponent:fname];
+                if (![fileMgr fileExistsAtPath:dst]) {
+                    [fileMgr copyItemAtPath:[bundleGamePath stringByAppendingPathComponent:fname] toPath:dst error:nil];
+                }
+            }
+        }
+    }
+
+    // iOS Files app will not show app folder with no file inside documents. Create placeholder if needed.
+    NSString *placeholderPath = [docPath stringByAppendingPathComponent:@"placeholder"];
     NSError *err = nil;
     NSArray *contents = [fileMgr contentsOfDirectoryAtPath:docPath error:&err];
-    if( contents == nil || contents.count == 0 )
+    if (contents == nil || contents.count == 0)
         [fileMgr createFileAtPath:placeholderPath contents:nil attributes:nil];
-    else
-        if( [fileMgr fileExistsAtPath:placeholderPath] )
-            [fileMgr removeItemAtPath:placeholderPath error:&err];
+    else if ([fileMgr fileExistsAtPath:placeholderPath] && contents.count > 1)
+        [fileMgr removeItemAtPath:placeholderPath error:&err];
 
     [self restart];
     return YES;
@@ -132,18 +153,23 @@ int sdlpal_main(int argc, char **argv)
 - (void)restart {
     PAL_LoadConfig(YES);
     const char *cachePath = UTIL_CachePath();
-    if( getppid() != 1)
-        NSLog(@"cache path:%s",cachePath);
-    BOOL crashed = [[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithFormat:@"%s/running", cachePath]];
-    if( gConfig.fLaunchSetting || crashed ) {
+    if (getppid() != 1)
+        NSLog(@"cache path:%s", cachePath);
+    NSString *runningFile = [NSString stringWithFormat:@"%s/running", cachePath];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:runningFile]) {
+        [[NSFileManager defaultManager] removeItemAtPath:runningFile error:nil];
+    }
+    if (gConfig.fLaunchSetting) {
         self.isInGame = NO;
-        
+        gConfig.fLaunchSetting = FALSE;
+        PAL_SaveConfig();
+
         self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
         UIStoryboard *sb = [UIStoryboard storyboardWithName:@"Settings" bundle:nil];
         UIViewController *vc = [sb instantiateInitialViewController];
         self.window.rootViewController = vc;
         [self.window makeKeyAndVisible];
-    }else{
+    } else {
         [self launchGame];
     }
 }

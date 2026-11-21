@@ -30,6 +30,7 @@
 #import <AVFoundation/AVFoundation.h>
 
 #include "palcommon.h"
+#include "palcfg.h"
 #include "util.h"
 
 /* Native Midi song */
@@ -77,14 +78,35 @@ NativeMidiSong *native_midi_loadsong_RW(SDL_RWops *rw)
         fclose(fp);
         
         memset(retval, 0, sizeof(NativeMidiSong));
-        NSURL *midiFileURL = [NSURL URLWithString:[NSString stringWithUTF8String:midiInterFile]];
-        NSURL *bankURL = [[NSBundle mainBundle] URLForResource:@"gs_instruments" withExtension: @"dls"];
-        if( midiPlayer ) {
+        NSURL *midiFileURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:midiInterFile]];
+        NSURL *bankURL = nil;
+        if (gConfig.pszSoundBank && gConfig.pszSoundBank[0] != '\0') {
+            NSString *sbName = [NSString stringWithUTF8String:gConfig.pszSoundBank];
+            NSFileManager *fm = [NSFileManager defaultManager];
+            if ([sbName hasPrefix:@"/"] && [fm fileExistsAtPath:sbName]) {
+                bankURL = [NSURL fileURLWithPath:sbName];
+            } else {
+                NSString *docCandidate = [[NSString stringWithUTF8String:UTIL_SavePath()] stringByAppendingPathComponent:sbName];
+                NSString *baseCandidate = [[NSString stringWithUTF8String:UTIL_BasePath()] stringByAppendingPathComponent:sbName];
+                if ([fm fileExistsAtPath:docCandidate]) {
+                    bankURL = [NSURL fileURLWithPath:docCandidate];
+                } else if ([fm fileExistsAtPath:baseCandidate]) {
+                    bankURL = [NSURL fileURLWithPath:baseCandidate];
+                }
+            }
+        }
+        if (bankURL == nil) {
+            bankURL = [[NSBundle mainBundle] URLForResource:@"gs_instruments" withExtension:@"dls"];
+        }
+        if (midiPlayer) {
+            [midiPlayer stop];
             midiPlayer = nil;
         }
-        NSError *err=nil;
-        midiPlayer = [[AVMIDIPlayer new] initWithContentsOfURL:midiFileURL soundBankURL:bankURL error:&err];
-        [midiPlayer prepareToPlay];
+        NSError *err = nil;
+        midiPlayer = [[AVMIDIPlayer alloc] initWithContentsOfURL:midiFileURL soundBankURL:bankURL error:&err];
+        if (midiPlayer) {
+            [midiPlayer prepareToPlay];
+        }
     }
     return retval;
 }
