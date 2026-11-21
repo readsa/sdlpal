@@ -282,3 +282,10 @@ emscripten/*.cpp
 
 # macOS Trashes
 *.DS_Store
+
+# Xcode / iOS local build & packaging artifacts
+DerivedData/
+deploy/
+*.ipa
+*.metallib
+ios/entitlements_*.plist
