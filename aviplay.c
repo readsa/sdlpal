@@ -664,6 +664,10 @@ PAL_PlayAVI(
 		return FALSE;
 	}
 
+    PALTOUCHMODE prevTouchMode = PAL_TouchGetMode();
+    BOOL prevCutscene = g_bInCutscene;
+    g_bInCutscene = TRUE;
+    PAL_TouchSetMode(kTouchModeNone);
     PAL_ClearKeyState();
 
 #if SDL_VERSION_ATLEAST(3,0,0)
@@ -766,6 +770,8 @@ PAL_PlayAVI(
 
 	fclose(fp);
 
+	g_bInCutscene = prevCutscene;
+	PAL_TouchSetMode(prevTouchMode);
 	return TRUE;
 }
 

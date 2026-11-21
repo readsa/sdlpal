@@ -472,6 +472,10 @@ PAL_RNGPlay(
    uint8_t        *buf = (uint8_t *)malloc(65000);
    FILE           *fp = UTIL_OpenRequiredFile("rng.mkf");
 
+   BOOL prevCutscene = g_bInCutscene;
+   g_bInCutscene = TRUE;
+   g_fSceneCleanForZoom = FALSE;
+
    //
    // Avoid losing the last frame
    //
@@ -479,7 +483,9 @@ PAL_RNGPlay(
 
    for (double iTime = SDL_GetPerformanceCounter(); rng && buf && iStartFrame != iEndFrame; iStartFrame++)
    {
-      iTime += iDelay;
+      int pct = PAL_GetSpeedPercent();
+      double stepDelay = (pct <= 100) ? iDelay : (iDelay * 100.0 / (double)pct);
+      iTime += stepDelay;
 
       //
       // Read, decompress and render the frame
@@ -517,4 +523,5 @@ PAL_RNGPlay(
    fclose(fp);
    free(rng);
    free(buf);
+   g_bInCutscene = prevCutscene;
 }

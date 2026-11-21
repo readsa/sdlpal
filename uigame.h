@@ -39,7 +39,7 @@ PAL_OpeningMenu(
 
 INT
 PAL_SaveSlotMenu(
-   WORD        wDefaultSlot
+   INT         wDefaultSlot
 );
 
 WORD
@@ -64,6 +64,11 @@ PAL_InGameMagicMenu(
 
 VOID
 PAL_InGameMenu(
+   VOID
+);
+
+VOID
+PAL_InGameSystemMenu(
    VOID
 );
 

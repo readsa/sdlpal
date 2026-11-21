@@ -1485,7 +1485,12 @@ PAL_InterpretInstruction(
          INT iBG_X = (320 - iBGWidth) / 2, iBG_Y = (200 - iBGHeight) / 2;
          PAL_POS pos = PAL_XY(iBG_X, iBG_Y);
          SDL_Rect rect = {iBG_X, iBG_Y, iBGWidth, iBGHeight};
+#if defined(__IOS__)
+         (void)pos;
+         PAL_DrawHextechBoxToScreen(iBG_X, iBG_Y, iBGWidth, iBGHeight, 4, 0);
+#else
          PAL_RLEBlitToSurface(pBG, gpScreen, pos);
+#endif
          
          WORD wObject = gpGlobals->g.lprgStore[0].rgwItems[i];
          static WORD wPrevImageIndex = 0xFFFF;
@@ -2512,7 +2517,7 @@ PAL_InterpretInstruction(
       //
       // Delay for a period
       //
-      UTIL_Delay(pScript->rgwOperand[0] * 80);
+      UTIL_Delay(PAL_ScaleDelayMs(pScript->rgwOperand[0] * 80));
       break;
 
    case 0x0086:
@@ -3292,7 +3297,7 @@ PAL_RunTriggerScript(
             PAL_MakeScene();
 
             VIDEO_UpdateScreen(NULL);
-            UTIL_Delay((pScript->rgwOperand[1] == 0) ? 60 : (pScript->rgwOperand[1] * 60));
+            UTIL_Delay(PAL_ScaleDelayMs((pScript->rgwOperand[1] == 0) ? 60 : (pScript->rgwOperand[1] * 60)));
          }
 
          wScriptEntry++;

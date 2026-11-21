@@ -115,6 +115,130 @@ PAL_FreeUI(
    }
 }
 
+VOID
+PAL_DrawHextechBoxToScreen(
+   INT          boxX,
+   INT          boxY,
+   INT          boxW,
+   INT          boxH,
+   INT          nShadowOffset,
+   INT          iBoxStyle
+)
+{
+   if (gpScreen == NULL || gpScreen->pixels == NULL || boxW <= 4 || boxH <= 4)
+   {
+      return;
+   }
+
+   g_fSceneCleanForZoom = FALSE;
+   uint8_t *uiMask = VIDEO_GetSurfaceUiMask(gpScreen, TRUE);
+   int chamfer = (boxW >= 28 && boxH >= 26) ? 3 : 2;
+
+   if (nShadowOffset > 0 && uiMask != NULL)
+   {
+      int sh = (nShadowOffset > 3) ? 3 : nShadowOffset;
+      for (int sy = 0; sy < boxH; sy++)
+      {
+         int py = boxY + sy + sh;
+         if (py < 0 || py >= 200) continue;
+         int sDistY = (sy < boxH - 1 - sy) ? sy : (boxH - 1 - sy);
+         for (int sx = 0; sx < boxW; sx++)
+         {
+            int px = boxX + sx + sh;
+            if (px < 0 || px >= 320) continue;
+            int sDistX = (sx < boxW - 1 - sx) ? sx : (boxW - 1 - sx);
+            if (sDistX + sDistY < chamfer) continue;
+
+            int mdx = px - boxX;
+            int mdy = py - boxY;
+            BOOL insideMain = FALSE;
+            if (mdx >= 0 && mdx < boxW && mdy >= 0 && mdy < boxH)
+            {
+               int mDistX = (mdx < boxW - 1 - mdx) ? mdx : (boxW - 1 - mdx);
+               int mDistY = (mdy < boxH - 1 - mdy) ? mdy : (boxH - 1 - mdy);
+               if (mDistX + mDistY >= chamfer)
+               {
+                  insideMain = TRUE;
+               }
+            }
+            if (!insideMain)
+            {
+               uiMask[py * 320 + px] = UIMASK_HEX_SHADOW;
+            }
+         }
+      }
+   }
+
+   for (int dy = 0; dy < boxH; dy++)
+   {
+      int py = boxY + dy;
+      if (py < 0 || py >= 200) continue;
+      LPBYTE dstRow = (LPBYTE)gpScreen->pixels + py * gpScreen->pitch;
+      int distY = (dy < boxH - 1 - dy) ? dy : (boxH - 1 - dy);
+
+      for (int dx = 0; dx < boxW; dx++)
+      {
+         int px = boxX + dx;
+         if (px < 0 || px >= 320) continue;
+         int distX = (dx < boxW - 1 - dx) ? dx : (boxW - 1 - dx);
+         int cornerSum = distX + distY;
+         if (cornerSum < chamfer) continue;
+
+         dstRow[px] = 0;
+         if (uiMask != NULL)
+         {
+            int ring = (distX < distY) ? distX : distY;
+            int diagRing = cornerSum - chamfer;
+            int d = (ring < diagRing) ? ring : diagRing;
+            uint8_t mat = UIMASK_HEX_GLASS_BG;
+
+            if (d == 0)
+            {
+               BOOL bCornerVertex = (cornerSum == chamfer) ||
+                  (distX == chamfer && distY == 0) ||
+                  (distY == chamfer && distX == 0);
+               BOOL bCenterClasp = (boxW >= 44) && (dy == 0 || dy == boxH - 1) &&
+                  (dx >= boxW / 2 - 2 && dx <= boxW / 2 + 2);
+               if (bCornerVertex || bCenterClasp)
+                  mat = UIMASK_HEX_GOLD_BRIGHT;
+               else
+                  mat = (iBoxStyle == 2) ? UIMASK_SCROLL_OUTER : UIMASK_HEX_GOLD_OUTER;
+            }
+            else if (d == 1 && boxH >= 20)
+            {
+               BOOL bCornerStud = (distX == 2 && distY == 2);
+               if (bCornerStud)
+                  mat = UIMASK_HEX_GOLD_BRIGHT;
+               else
+                  mat = (iBoxStyle == 2) ? UIMASK_SCROLL_SHINE : UIMASK_HEX_DARK_MOAT;
+            }
+            else if ((boxH >= 20 && d == 2) || (boxH < 20 && d == 1))
+            {
+               mat = (iBoxStyle == 2) ? UIMASK_SCROLL_INNER : UIMASK_HEX_JADE_INNER;
+            }
+            else
+            {
+               int shineRows = (boxH >= 20) ? 4 : 2;
+               if (iBoxStyle == 2)
+               {
+                  mat = (dy <= shineRows) ? UIMASK_SCROLL_SHINE : UIMASK_SCROLL_BG;
+               }
+               else if (iBoxStyle == 1)
+               {
+                  mat = (dy <= shineRows) ? UIMASK_WOOD1_SHINE : UIMASK_WOOD1_BG;
+               }
+               else
+               {
+                  mat = (dy <= shineRows) ? UIMASK_HEX_GLASS_SHINE : UIMASK_HEX_GLASS_BG;
+               }
+            }
+
+            uiMask[py * 320 + px] = mat;
+         }
+      }
+   }
+}
+
 LPBOX
 PAL_CreateBox(
    PAL_POS        pos,
@@ -210,6 +334,16 @@ PAL_CreateBoxWithShadow(
       lpBox = PAL_CreateBoxInternal(&rect);
    }
 
+#if defined(__IOS__)
+   PAL_DrawHextechBoxToScreen(
+      rect.x,
+      rect.y,
+      rect.w - nShadowOffset,
+      rect.h - nShadowOffset,
+      nShadowOffset,
+      iStyle ? 1 : 0
+   );
+#else
    //
    // Border takes 2 additional rows and columns...
    //
@@ -219,6 +353,7 @@ PAL_CreateBoxWithShadow(
    //
    // Draw the box
    //
+   g_fSceneCleanForZoom = FALSE;
    for (i = 0; i < nRows; i++)
    {
       x = rect.x;
@@ -234,6 +369,7 @@ PAL_CreateBoxWithShadow(
 
       rect.y += PAL_RLEGetHeight(rglpBorderBitmap[m][0]);
    }
+#endif
 
    return lpBox;
 }
@@ -315,11 +451,25 @@ PAL_CreateSingleLineBoxWithShadow(
       //
       lpBox = PAL_CreateBoxInternal(&rect);
    }
+
+#if defined(__IOS__)
+   (void)i;
+   (void)xSaved;
+   PAL_DrawHextechBoxToScreen(
+      rect.x,
+      rect.y,
+      rect.w - nShadowOffset,
+      rect.h - nShadowOffset,
+      nShadowOffset,
+      2
+   );
+#else
    xSaved = rect.x;
 
    //
    // Draw the shadow
    //
+   g_fSceneCleanForZoom = FALSE;
    PAL_RLEBlitToSurfaceWithShadow(lpBitmapLeft, gpScreen, PAL_XY(rect.x+nShadowOffset, rect.y+nShadowOffset), TRUE);
 
    rect.x += PAL_RLEGetWidth(lpBitmapLeft);
@@ -347,6 +497,7 @@ PAL_CreateSingleLineBoxWithShadow(
    }
 
    PAL_RLEBlitToSurface(lpBitmapRight, gpScreen, PAL_XY(rect.x, rect.y));
+#endif
 
    return lpBox;
 }
@@ -429,8 +580,29 @@ PAL_ReadMenu(
 
 --*/
 {
-   int               i;
+   int               i, m;
    WORD              wCurrentItem    = (wDefaultItem < nMenuItem) ? wDefaultItem : 0;
+   PALTOUCHMODE      prevTouchMode   = PAL_TouchGetMode();
+   BOOL              fIsShopBuyMenu  = (nMenuItem > 0 && PAL_X(rgMenuItem[0].pos) == 150 && PAL_Y(rgMenuItem[0].pos) == 21);
+   int               boxMinX = 320, boxMinY = 200, boxMaxX = 0, boxMaxY = 0;
+
+   if (prevTouchMode != kTouchModeTitleMenu)
+   {
+      PAL_TouchSetMode(kTouchModeMenu);
+   }
+   PAL_TouchClearGestures();
+
+   for (i = 0; i < nMenuItem; i++)
+   {
+      int ix = PAL_X(rgMenuItem[i].pos);
+      int iy = PAL_Y(rgMenuItem[i].pos);
+      int iw = PAL_TextWidth(PAL_UnescapeText(PAL_GetWord(rgMenuItem[i].wNumWord)));
+      if (ix < boxMinX) boxMinX = ix;
+      if (iy < boxMinY) boxMinY = iy;
+      if (ix + iw > boxMaxX) boxMaxX = ix + iw;
+      if (iy + 16 > boxMaxY) boxMaxY = iy + 16;
+   }
+   if (fIsShopBuyMenu && boxMaxX < 285) boxMaxX = 285;
 
    //
    // Fix issue #166
@@ -465,12 +637,14 @@ PAL_ReadMenu(
 
    if (lpfnMenuItemChanged != NULL)
    {
-      (*lpfnMenuItemChanged)(rgMenuItem[wDefaultItem].wValue);
+      (*lpfnMenuItemChanged)(rgMenuItem[wCurrentItem].wValue);
    }
+
+   PAL_ClearKeyState();
 
    while (TRUE)
    {
-      PAL_ClearKeyState();
+      INT tapX = 0, tapY = 0;
 
       //
       // Redraw the selected item if needed.
@@ -482,6 +656,124 @@ PAL_ReadMenu(
       }
 
       PAL_ProcessEvent();
+
+      //
+      // Handle direct touch on menu items
+      //
+      if (PAL_TouchPollTap(&tapX, &tapY))
+      {
+         int hitIdx = -1;
+         BOOL fTappedIconConfirm = FALSE;
+
+         for (i = 0; i < nMenuItem; i++)
+         {
+            int ix = PAL_X(rgMenuItem[i].pos);
+            int iy = PAL_Y(rgMenuItem[i].pos);
+            int iw = PAL_TextWidth(PAL_UnescapeText(PAL_GetWord(rgMenuItem[i].wNumWord)));
+            BOOL fSameRowNeighbor = FALSE;
+            int hitX1, hitX2;
+
+            for (m = 0; m < nMenuItem; m++)
+            {
+               if (m != i && abs(PAL_Y(rgMenuItem[m].pos) - iy) < 12)
+               {
+                  fSameRowNeighbor = TRUE;
+                  break;
+               }
+            }
+
+            if (fSameRowNeighbor)
+            {
+               hitX1 = ix - 8;
+               hitX2 = ix + iw + 8;
+            }
+            else
+            {
+               int minSpan = fIsShopBuyMenu ? 135 : 88;
+               hitX1 = ix - 16;
+               hitX2 = ix + ((iw + 20 > minSpan) ? (iw + 20) : minSpan);
+            }
+
+            if (tapX >= hitX1 && tapX <= hitX2 && tapY >= iy - 3 && tapY <= iy + 17)
+            {
+               hitIdx = i;
+               break;
+            }
+         }
+
+         // Support tapping party info cards at bottom during InGameMagicMenu role selection
+         if (hitIdx < 0 && nMenuItem <= MAX_PLAYERS_IN_PARTY &&
+             PAL_X(rgMenuItem[0].pos) == 48 && PAL_Y(rgMenuItem[0].pos) == 75 &&
+             tapY >= 158 && tapY <= 200)
+         {
+            for (i = 0; i < nMenuItem; i++)
+            {
+               int px = 45 + 78 * i;
+               if (tapX >= px - 2 && tapX <= px + 76)
+               {
+                  hitIdx = i;
+                  break;
+               }
+            }
+         }
+
+         // Support tapping item preview box in BuyMenu to confirm purchase
+         if (hitIdx < 0 && fIsShopBuyMenu && tapX >= 32 && tapX <= 106 && tapY >= 6 && tapY <= 92)
+         {
+            hitIdx = wCurrentItem;
+            fTappedIconConfirm = TRUE;
+         }
+
+         if (hitIdx >= 0)
+         {
+            WORD wPrevItem = wCurrentItem;
+            if (hitIdx != wCurrentItem)
+            {
+               g_bRenderPaused = TRUE;
+               PAL_DrawText(PAL_GetWord(rgMenuItem[wCurrentItem].wNumWord),
+                  rgMenuItem[wCurrentItem].pos,
+                  rgMenuItem[wCurrentItem].fEnabled ? bLabelColor : MENUITEM_COLOR_INACTIVE,
+                  FALSE, TRUE, FALSE);
+
+               wCurrentItem = (WORD)hitIdx;
+
+               PAL_DrawText(PAL_GetWord(rgMenuItem[wCurrentItem].wNumWord),
+                  rgMenuItem[wCurrentItem].pos,
+                  rgMenuItem[wCurrentItem].fEnabled ? MENUITEM_COLOR_SELECTED : MENUITEM_COLOR_SELECTED_INACTIVE,
+                  FALSE, TRUE, FALSE);
+               g_bRenderPaused = FALSE;
+               VIDEO_UpdateScreen(NULL);
+
+               if (lpfnMenuItemChanged != NULL)
+               {
+                  (*lpfnMenuItemChanged)(rgMenuItem[wCurrentItem].wValue);
+               }
+            }
+
+            if (rgMenuItem[wCurrentItem].fEnabled &&
+                (!fIsShopBuyMenu || hitIdx == wPrevItem || fTappedIconConfirm))
+            {
+               PAL_DrawText(PAL_GetWord(rgMenuItem[wCurrentItem].wNumWord),
+                  rgMenuItem[wCurrentItem].pos, MENUITEM_COLOR_CONFIRMED, FALSE, TRUE, FALSE);
+               PAL_TouchSetMode(prevTouchMode);
+               return rgMenuItem[wCurrentItem].wValue;
+            }
+         }
+         else if (PAL_TouchGetMode() != kTouchModeTitleMenu)
+         {
+            if (fIsShopBuyMenu)
+            {
+               if (tapX < 18 || tapX > 295 || tapY > 184 || (tapX < 38 && tapY < 96))
+               {
+                  g_InputState.dwKeyPress |= kKeyMenu;
+               }
+            }
+            else if (tapX < boxMinX - 20 || tapX > boxMaxX + 24 || tapY < boxMinY - 20 || tapY > boxMaxY + 22)
+            {
+               g_InputState.dwKeyPress |= kKeyMenu;
+            }
+         }
+      }
 
       if (g_InputState.dwKeyPress & (kKeyDown | kKeyRight))
       {
@@ -623,16 +915,28 @@ PAL_ReadMenu(
             PAL_DrawText(PAL_GetWord(rgMenuItem[wCurrentItem].wNumWord),
                rgMenuItem[wCurrentItem].pos, MENUITEM_COLOR_CONFIRMED, FALSE, TRUE, FALSE);
 
+            PAL_TouchSetMode(prevTouchMode);
             return rgMenuItem[wCurrentItem].wValue;
          }
       }
 
       //
-      // Use delay function to avoid high CPU usage.
+      // Clear processed key state BEFORE sleeping so keys arriving during sleep are preserved!
       //
-      SDL_Delay(50);
+      PAL_ClearKeyState();
+
+      for (i = 0; i < 5; i++)
+      {
+         SDL_Delay(10);
+         PAL_ProcessEvent();
+         if (g_InputState.dwKeyPress != 0 || PAL_TouchHasPendingInput())
+         {
+            break;
+         }
+      }
    }
 
+   PAL_TouchSetMode(prevTouchMode);
    return MENUITEM_VALUE_CANCELLED;
 }
 

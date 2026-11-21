@@ -24,6 +24,7 @@
 
 #include "common.h"
 #include "palcommon.h"
+#include "touch_ui.h"
 
 typedef struct tagPALINPUTSTATE
 {
@@ -58,6 +59,7 @@ enum PALKEY
    kKeyForce       = (1 << 15),
    kKeyHome        = (1 << 16),
    kKeyEnd         = (1 << 17),
+   kKeySystem      = (1 << 18),
 };
 
 PAL_C_LINKAGE_BEGIN

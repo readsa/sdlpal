@@ -509,6 +509,50 @@ PAL_Search(
    }
 }
 
+static BOOL
+PAL_HasSearchTargetInFront(
+   VOID
+)
+{
+   int           dh, dx, dy, ex, ey, eh, i, k;
+   LPEVENTOBJECT p;
+   TRIGGERRANGE  rgRange;
+
+   if (gpGlobals == NULL || gpGlobals->wNumScene == 0)
+   {
+      return FALSE;
+   }
+
+   rgRange = PAL_GetSearchTriggerRange();
+
+   for (i = 0; i < 13; i++)
+   {
+      dh = ((PAL_X(rgRange.rgPos[i]) % 32) ? 1 : 0);
+      dx = PAL_X(rgRange.rgPos[i]) / 32;
+      dy = PAL_Y(rgRange.rgPos[i]) / 16;
+
+      for (k = gpGlobals->g.rgScene[gpGlobals->wNumScene - 1].wEventObjectIndex;
+         k < gpGlobals->g.rgScene[gpGlobals->wNumScene].wEventObjectIndex; k++)
+      {
+         p = &(gpGlobals->g.lprgEventObject[k]);
+         ex = p->x / 32;
+         ey = p->y / 16;
+         eh = ((p->x % 32) ? 1 : 0);
+
+         if (p->sState <= 0 || p->wTriggerMode >= kTriggerTouchNear ||
+            p->wTriggerMode * 6 - 4 <= i || dx != ex || dy != ey || dh != eh ||
+            p->wTriggerScript == 0)
+         {
+            continue;
+         }
+
+         return TRUE;
+      }
+   }
+
+   return FALSE;
+}
+
 VOID
 PAL_StartFrame(
    VOID
@@ -528,19 +572,52 @@ PAL_StartFrame(
 
 --*/
 {
+   BOOL         fAutoSearch = FALSE;
+   PALDIRECTION walkDir = kDirUnknown;
+
+   PAL_TouchSetMode(kTouchModeMap);
+
    //
    // Run the game logic of one frame
    //
    PAL_GameUpdate(TRUE);
    if (gpGlobals->fEnteringScene)
    {
+      PAL_TouchCancelMapWalk();
       return;
    }
 
    //
-   // Update the positions and gestures of party members
+   // Support official-iOS-style tap-to-walk & auto-interact when joystick is idle
    //
-   PAL_UpdateParty();
+   if (g_InputState.dir == kDirUnknown)
+   {
+      walkDir = PAL_TouchUpdateMapWalk(&fAutoSearch);
+      if (walkDir != kDirUnknown)
+      {
+         g_InputState.dir = walkDir;
+         PAL_UpdateParty();
+         g_InputState.dir = kDirUnknown;
+      }
+      else
+      {
+         PAL_UpdateParty();
+      }
+      if (fAutoSearch && PAL_HasSearchTargetInFront())
+      {
+         g_InputState.dwKeyPress |= kKeySearch;
+      }
+   }
+   else
+   {
+      PAL_RecenterMapCamera();
+      PAL_UpdateParty();
+   }
+
+   //
+   // Highlight the Search HUD button when an NPC, chest, or hidden item is in range
+   //
+   PAL_TouchSetSearchHint(PAL_HasSearchTargetInFront());
 
    //
    // Update the scene
@@ -554,6 +631,13 @@ PAL_StartFrame(
       // Show the in-game menu
       //
       PAL_InGameMenu();
+   }
+   else if (g_InputState.dwKeyPress & kKeySystem)
+   {
+      //
+      // Direct 1-tap System / Save / Load menu
+      //
+      PAL_InGameSystemMenu();
    }
    else if (g_InputState.dwKeyPress & kKeyUseItem)
    {
@@ -621,8 +705,10 @@ PAL_WaitForKeyInternal(
 
 --*/
 {
-   DWORD     dwTimeOut = SDL_GetTicks() + wTimeOut;
+   DWORD        dwTimeOut = SDL_GetTicks() + wTimeOut;
+   PALTOUCHMODE prevMode = PAL_TouchGetMode();
 
+   PAL_TouchSetMode(kTouchModeDialog);
    PAL_ClearKeyState();
 
    while (wTimeOut == 0 || !SDL_TICKS_PASSED(SDL_GetTicks(), dwTimeOut))
@@ -635,6 +721,8 @@ PAL_WaitForKeyInternal(
          break;
       }
    }
+
+   PAL_TouchSetMode(prevMode);
 }
 
 VOID

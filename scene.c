@@ -24,17 +24,39 @@
 
 #include "main.h"
 
-#define MAX_SPRITE_TO_DRAW         2048
+#define MAX_SPRITE_TO_DRAW         16384
+
+BOOL g_fSceneCleanForZoom = FALSE;
+BOOL g_bInsideMakeScene = FALSE;
+BOOL g_bInCutscene = FALSE;
 
 typedef struct tagSPRITE_TO_DRAW
 {
    LPCBITMAPRLE     lpSpriteFrame; // pointer to the frame bitmap
    PAL_POS          pos;           // position on the scene
    int              iLayer;        // logical layer
+   int              iOrder;        // insertion order for stable sort
 } SPRITE_TO_DRAW;
 
 static SPRITE_TO_DRAW    g_rgSpriteToDraw[MAX_SPRITE_TO_DRAW];
 static int               g_nSpriteToDraw;
+
+static int
+PAL_CompareSpritesToDraw(
+   const void *pa,
+   const void *pb
+)
+{
+   const SPRITE_TO_DRAW *a = (const SPRITE_TO_DRAW *)pa;
+   const SPRITE_TO_DRAW *b = (const SPRITE_TO_DRAW *)pb;
+   int ya = PAL_Y(a->pos);
+   int yb = PAL_Y(b->pos);
+   if (ya != yb)
+   {
+      return ya - yb;
+   }
+   return a->iOrder - b->iOrder;
+}
 
 static VOID
 PAL_AddSpriteToDraw(
@@ -64,18 +86,24 @@ PAL_AddSpriteToDraw(
 
 --*/
 {
-   assert(g_nSpriteToDraw < MAX_SPRITE_TO_DRAW);
+   if (g_nSpriteToDraw >= MAX_SPRITE_TO_DRAW)
+   {
+      return;
+   }
 
    g_rgSpriteToDraw[g_nSpriteToDraw].lpSpriteFrame = lpSpriteFrame;
    g_rgSpriteToDraw[g_nSpriteToDraw].pos = PAL_XY(x, y);
    g_rgSpriteToDraw[g_nSpriteToDraw].iLayer = iLayer;
+   g_rgSpriteToDraw[g_nSpriteToDraw].iOrder = g_nSpriteToDraw;
 
    g_nSpriteToDraw++;
 }
 
 static VOID
-PAL_CalcCoverTiles(
-   SPRITE_TO_DRAW         *lpSpriteToDraw
+PAL_CalcCoverTilesEx(
+   SPRITE_TO_DRAW         *lpSpriteToDraw,
+   int                     camX,
+   int                     camY
 )
 /*++
    Purpose:
@@ -96,8 +124,8 @@ PAL_CalcCoverTiles(
    int             x, y, i, l, iTileHeight;
    LPCBITMAPRLE    lpTile;
 
-   const int       sx = PAL_X(gpGlobals->viewport) + PAL_X(lpSpriteToDraw->pos) - lpSpriteToDraw->iLayer/2;
-   const int       sy = PAL_Y(gpGlobals->viewport) + PAL_Y(lpSpriteToDraw->pos) - lpSpriteToDraw->iLayer;
+   const int       sx = camX + PAL_X(lpSpriteToDraw->pos) - lpSpriteToDraw->iLayer/2;
+   const int       sy = camY + PAL_Y(lpSpriteToDraw->pos) - lpSpriteToDraw->iLayer;
    const int       sh = ((sx % 32) ? 1 : 0);
 
    const int       width = PAL_RLEGetWidth(lpSpriteToDraw->lpSpriteFrame);
@@ -153,10 +181,15 @@ PAL_CalcCoverTiles(
                   break;
             }
 
+            if (dx < 0 || dx >= 64 || dy < 0 || dy >= 128)
+            {
+               continue;
+            }
+
             for (l = 0; l < 2; l++)
             {
-               lpTile = PAL_MapGetTileBitmap(dx, dy, dh, l, PAL_GetCurrentMap());
-               iTileHeight = (signed char)PAL_MapGetTileHeight(dx, dy, dh, l, PAL_GetCurrentMap());
+               lpTile = PAL_MapGetTileBitmap((BYTE)dx, (BYTE)dy, (BYTE)dh, l, PAL_GetCurrentMap());
+               iTileHeight = (signed char)PAL_MapGetTileHeight((BYTE)dx, (BYTE)dy, (BYTE)dh, l, PAL_GetCurrentMap());
 
                //
                // Check if this tile may cover the sprites
@@ -167,8 +200,8 @@ PAL_CalcCoverTiles(
                   // This tile may cover the sprite
                   //
                   PAL_AddSpriteToDraw(lpTile,
-                     dx * 32 + dh * 16 - 16 - PAL_X(gpGlobals->viewport),
-                     dy * 16 + dh * 8 + 7 + l + iTileHeight * 8 - PAL_Y(gpGlobals->viewport),
+                     dx * 32 + dh * 16 - 16 - camX,
+                     dy * 16 + dh * 8 + 7 + l + iTileHeight * 8 - camY,
                      iTileHeight * 8 + l);
                }
             }
@@ -178,25 +211,23 @@ PAL_CalcCoverTiles(
 }
 
 static VOID
-PAL_SceneDrawSprites(
-   VOID
+PAL_SceneDrawSpritesEx(
+   SDL_Surface    *lpDstSurface,
+   int             camX,
+   int             camY
 )
 /*++
    Purpose:
 
-     Draw all the sprites to scene.
-
-   Parameters:
-
-     None.
-
-   Return value:
-
-     None.
+     Draw all the sprites to scene surface for a given camera viewport.
 
 --*/
 {
    int i, x, y, vy;
+   int viewW = lpDstSurface->w;
+   int viewH = lpDstSurface->h;
+   int partyOffX = PAL_X(gpGlobals->viewport) - camX;
+   int partyOffY = PAL_Y(gpGlobals->viewport) - camY;
 
    g_nSpriteToDraw = 0;
 
@@ -220,15 +251,19 @@ PAL_SceneDrawSprites(
       //
       // Add it to our array
       //
+      int prevCount = g_nSpriteToDraw;
       PAL_AddSpriteToDraw(lpBitmap,
-         gpGlobals->rgParty[i].x - PAL_RLEGetWidth(lpBitmap) / 2,
-         gpGlobals->rgParty[i].y + gpGlobals->wLayer + 10,
+         gpGlobals->rgParty[i].x + partyOffX - PAL_RLEGetWidth(lpBitmap) / 2,
+         gpGlobals->rgParty[i].y + partyOffY + gpGlobals->wLayer + 10,
          gpGlobals->wLayer + 6);
 
       //
       // Calculate covering tiles on the map
       //
-      PAL_CalcCoverTiles(&g_rgSpriteToDraw[g_nSpriteToDraw - 1]);
+      if (g_nSpriteToDraw > prevCount)
+      {
+         PAL_CalcCoverTilesEx(&g_rgSpriteToDraw[prevCount], camX, camY);
+      }
    }
 
    //
@@ -287,10 +322,10 @@ PAL_SceneDrawSprites(
       //
       // Calculate the coordinate and check if outside the screen
       //
-      x = (SHORT)lpEvtObj->x - PAL_X(gpGlobals->viewport);
+      x = (SHORT)lpEvtObj->x - camX;
       x -= PAL_RLEGetWidth(lpFrame) / 2;
 
-      if (x >= 320 || x < -(int)PAL_RLEGetWidth(lpFrame))
+      if (x >= viewW || x < -(int)PAL_RLEGetWidth(lpFrame))
       {
          //
          // outside the screen; skip it
@@ -298,11 +333,11 @@ PAL_SceneDrawSprites(
          continue;
       }
 
-      y = (SHORT)lpEvtObj->y - PAL_Y(gpGlobals->viewport);
+      y = (SHORT)lpEvtObj->y - camY;
       y += lpEvtObj->sLayer * 8 + 9;
 
       vy = y - PAL_RLEGetHeight(lpFrame) - lpEvtObj->sLayer * 8 + 2;
-      if (vy >= 200 || vy < -(int)PAL_RLEGetHeight(lpFrame))
+      if (vy >= viewH || vy < -(int)PAL_RLEGetHeight(lpFrame))
       {
          //
          // outside the screen; skip it
@@ -313,42 +348,28 @@ PAL_SceneDrawSprites(
       //
       // Add it into the array
       //
+      int prevCount = g_nSpriteToDraw;
       PAL_AddSpriteToDraw(lpFrame, x, y, lpEvtObj->sLayer * 8 + 2);
 
       //
       // Calculate covering map tiles
       //
-      PAL_CalcCoverTiles(&g_rgSpriteToDraw[g_nSpriteToDraw - 1]);
+      if (g_nSpriteToDraw > prevCount)
+      {
+         PAL_CalcCoverTilesEx(&g_rgSpriteToDraw[prevCount], camX, camY);
+      }
    }
 
    //
-   // All sprites are now in our array; sort them by their vertical positions.
+   // Sort sprites stably by vertical position in O(N log N)
    //
-   for (x = 0; x < g_nSpriteToDraw - 1; x++)
+   if (g_nSpriteToDraw > 1)
    {
-      SPRITE_TO_DRAW           tmp;
-      BOOL                     fSwap = FALSE;
-
-      for (y = 0; y < g_nSpriteToDraw - 1 - x; y++)
-      {
-         if (PAL_Y(g_rgSpriteToDraw[y].pos) > PAL_Y(g_rgSpriteToDraw[y + 1].pos))
-         {
-            fSwap = TRUE;
-
-            tmp = g_rgSpriteToDraw[y];
-            g_rgSpriteToDraw[y] = g_rgSpriteToDraw[y + 1];
-            g_rgSpriteToDraw[y + 1] = tmp;
-         }
-      }
-
-      if (!fSwap)
-      {
-         break;
-      }
+      qsort(g_rgSpriteToDraw, g_nSpriteToDraw, sizeof(SPRITE_TO_DRAW), PAL_CompareSpritesToDraw);
    }
 
    //
-   // Draw all the sprites to the screen.
+   // Draw all the sprites to the destination surface.
    //
    for (i = 0; i < g_nSpriteToDraw; i++)
    {
@@ -357,8 +378,35 @@ PAL_SceneDrawSprites(
       x = PAL_X(p->pos);
       y = PAL_Y(p->pos) - PAL_RLEGetHeight(p->lpSpriteFrame) - p->iLayer;
 
-      PAL_RLEBlitToSurface(p->lpSpriteFrame, gpScreen, PAL_XY(x, y));
+      PAL_RLEBlitToSurface(p->lpSpriteFrame, lpDstSurface, PAL_XY(x, y));
    }
+}
+
+static VOID
+PAL_SceneDrawSprites(
+   VOID
+)
+{
+   PAL_SceneDrawSpritesEx(gpScreen, PAL_X(gpGlobals->viewport), PAL_Y(gpGlobals->viewport));
+}
+
+VOID
+PAL_RenderZoomedMapRect(
+   SDL_Surface    *lpDstSurface,
+   const SDL_Rect *pWorldSubRect
+)
+{
+   LPCPALMAP lpMap = PAL_GetCurrentMap();
+
+   if (lpDstSurface == NULL || pWorldSubRect == NULL || gpGlobals == NULL || lpMap == NULL)
+   {
+      return;
+   }
+
+   memset(lpDstSurface->pixels, 0, (size_t)lpDstSurface->pitch * (size_t)lpDstSurface->h);
+   PAL_MapBlitToSurface(lpMap, lpDstSurface, pWorldSubRect, 0);
+   PAL_MapBlitToSurface(lpMap, lpDstSurface, pWorldSubRect, 1);
+   PAL_SceneDrawSpritesEx(lpDstSurface, pWorldSubRect->x, pWorldSubRect->y);
 }
 
 VOID
@@ -477,6 +525,9 @@ PAL_MakeScene(
 {
    static SDL_Rect         rect = {0, 0, 320, 200};
 
+   g_bInsideMakeScene = TRUE;
+   VIDEO_ClearScreenUiMask();
+
    //
    // Step 1: Draw the complete map, for both of the layers.
    //
@@ -495,6 +546,8 @@ PAL_MakeScene(
    // Step 3: Draw all the sprites.
    //
    PAL_SceneDrawSprites();
+   g_bInsideMakeScene = FALSE;
+   g_fSceneCleanForZoom = TRUE;
 
 #if PAL_DEBUG_SHOW_SEARCH_TRIGGER_RANGE
    //

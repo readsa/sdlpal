@@ -24,25 +24,12 @@
 static int     g_iNumInventory = 0;
 static WORD    g_wItemFlags = 0;
 static BOOL    g_fNoDesc = FALSE;
+static int     g_iInvTopRow = 0;
 
 WORD
 PAL_ItemSelectMenuUpdate(
    VOID
 )
-/*++
-  Purpose:
-
-    Initialize the item selection menu.
-
-  Parameters:
-
-    None.
-
-  Return value:
-
-    The object ID of the selected item. 0 if cancelled, 0xFFFF if not confirmed.
-
---*/
 {
    int                i, j, k, line, item_delta;
    WORD               wObject, wScript;
@@ -53,12 +40,17 @@ PAL_ItemSelectMenuUpdate(
    const int          iLinesPerPage = 7 - gConfig.ScreenLayout.ExtraItemDescLines;
    const int          iCursorXOffset = gConfig.dwWordLength * 5 / 2;
    const int          iAmountXOffset = gConfig.dwWordLength * 8 + 1;
-   const int          iPageLineOffset = (iLinesPerPage + 1) / 2;
    const int          iPictureYOffset = (gConfig.ScreenLayout.ExtraItemDescLines > 1) ? (gConfig.ScreenLayout.ExtraItemDescLines - 1) * 16 : 0;
-   PAL_POS            cursorPos = PAL_XY(15 + iCursorXOffset, 22);;
+   const int          iTotalRows = (g_iNumInventory + iItemsPerLine - 1) / iItemsPerLine;
+   const int          iMaxTopRow = (iTotalRows > iLinesPerPage) ? (iTotalRows - iLinesPerPage) : 0;
+   PAL_POS            cursorPos = PAL_XY(15 + iCursorXOffset, 22);
+   BOOL               fCursorVisible = FALSE;
+   BOOL               fTouchConfirm = FALSE;
+   INT                tapX = 0, tapY = 0;
+   INT                scrollRows = 0;
 
    //
-   // Process input
+   // Process keyboard / button input
    //
    if (g_InputState.dwKeyPress & kKeyUp)
    {
@@ -101,15 +93,77 @@ PAL_ItemSelectMenuUpdate(
       item_delta = 0;
    }
 
+   if (g_iNumInventory <= 0)
+   {
+      PAL_CreateBoxWithShadow(PAL_XY(2, 0), iLinesPerPage - 1, 17, 1, FALSE, 0);
+      PAL_TouchPollTap(&tapX, &tapY);
+      PAL_TouchPollScrollRows(16);
+      return 0xFFFF;
+   }
+
    //
    // Make sure the current menu item index is in bound
    //
    if (gpGlobals->iCurInvMenuItem + item_delta < 0)
       gpGlobals->iCurInvMenuItem = 0;
    else if (gpGlobals->iCurInvMenuItem + item_delta >= g_iNumInventory)
-      gpGlobals->iCurInvMenuItem = g_iNumInventory-1;
+      gpGlobals->iCurInvMenuItem = g_iNumInventory - 1;
    else
       gpGlobals->iCurInvMenuItem += item_delta;
+
+   if (item_delta != 0)
+   {
+      int curRow = gpGlobals->iCurInvMenuItem / iItemsPerLine;
+      if (curRow < g_iInvTopRow)
+         g_iInvTopRow = curRow;
+      else if (curRow >= g_iInvTopRow + iLinesPerPage)
+         g_iInvTopRow = curRow - iLinesPerPage + 1;
+   }
+
+   //
+   // Process touch drag scrolling
+   //
+   scrollRows = PAL_TouchPollScrollRows(16);
+   if (scrollRows != 0)
+   {
+      g_iInvTopRow += scrollRows;
+   }
+   if (g_iInvTopRow < 0) g_iInvTopRow = 0;
+   if (g_iInvTopRow > iMaxTopRow) g_iInvTopRow = iMaxTopRow;
+
+   //
+   // Process direct touch tap
+   //
+   if (PAL_TouchPollTap(&tapX, &tapY))
+   {
+      if (tapX >= 6 && tapX <= 314 && tapY >= 8 && tapY < 12 + iLinesPerPage * 18)
+      {
+         int col = (tapX - 12) / iItemTextWidth;
+         int row = (tapY - 10) / 18;
+         if (col < 0) col = 0;
+         if (col >= iItemsPerLine) col = iItemsPerLine - 1;
+         if (row < 0) row = 0;
+         if (row >= iLinesPerPage) row = iLinesPerPage - 1;
+
+         int tappedIdx = (g_iInvTopRow + row) * iItemsPerLine + col;
+         if (tappedIdx >= 0 && tappedIdx < g_iNumInventory && gpGlobals->rgInventory[tappedIdx].wItem != 0)
+         {
+            if (tappedIdx != gpGlobals->iCurInvMenuItem)
+            {
+               gpGlobals->iCurInvMenuItem = tappedIdx;
+            }
+            else
+            {
+               fTouchConfirm = TRUE;
+            }
+         }
+      }
+      else if (tapX >= 0 && tapX <= 74 && tapY >= 134 && tapY <= 200)
+      {
+         // Tapping the selected item's picture box confirms Use / Equip / Sell
+         fTouchConfirm = TRUE;
+      }
+   }
 
    //
    // Redraw the box
@@ -119,11 +173,7 @@ PAL_ItemSelectMenuUpdate(
    //
    // Draw the texts in the current page
    //
-   i = gpGlobals->iCurInvMenuItem / iItemsPerLine * iItemsPerLine - iItemsPerLine * iPageLineOffset;
-   if (i < 0)
-   {
-      i = 0;
-   }
+   i = g_iInvTopRow * iItemsPerLine;
 
    const int xBase = 0, yBase = 140;
 
@@ -131,14 +181,17 @@ PAL_ItemSelectMenuUpdate(
    {
       for (k = 0; k < iItemsPerLine; k++)
       {
+         if (i >= g_iNumInventory || i >= MAX_INVENTORY)
+         {
+            j = iLinesPerPage;
+            break;
+         }
+
          wObject = gpGlobals->rgInventory[i].wItem;
          bColor = MENUITEM_COLOR;
 
-         if (i >= MAX_INVENTORY || wObject == 0)
+         if (wObject == 0)
          {
-            //
-            // End of the list reached
-            //
             j = iLinesPerPage;
             break;
          }
@@ -148,16 +201,10 @@ PAL_ItemSelectMenuUpdate(
             if (!(gpGlobals->g.rgObject[wObject].item.wFlags & g_wItemFlags) ||
                (SHORT)gpGlobals->rgInventory[i].nAmount <= (SHORT)gpGlobals->rgInventory[i].nAmountInUse)
             {
-               //
-               // This item is not selectable
-               //
                bColor = MENUITEM_COLOR_SELECTED_INACTIVE;
             }
             else
             {
-               //
-               // This item is selectable
-               //
                if (gpGlobals->rgInventory[i].nAmount == 0)
                {
                   bColor = MENUITEM_COLOR_EQUIPPEDITEM;
@@ -171,9 +218,6 @@ PAL_ItemSelectMenuUpdate(
          else if (!(gpGlobals->g.rgObject[wObject].item.wFlags & g_wItemFlags) ||
             (SHORT)gpGlobals->rgInventory[i].nAmount <= (SHORT)gpGlobals->rgInventory[i].nAmountInUse)
          {
-            //
-            // This item is not selectable
-            //
             bColor = MENUITEM_COLOR_INACTIVE;
          }
          else if (gpGlobals->rgInventory[i].nAmount == 0)
@@ -189,20 +233,7 @@ PAL_ItemSelectMenuUpdate(
          if (i == gpGlobals->iCurInvMenuItem)
          {
             cursorPos = PAL_XY(15 + iCursorXOffset + k * iItemTextWidth, 22 + j * 18);
-
-            //
-            // Draw the picture of current selected item
-            //
-            PAL_RLEBlitToSurfaceWithShadow(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_ITEMBOX), gpScreen,
-               PAL_XY(xBase + 5, yBase + 5 - iPictureYOffset), TRUE);
-            PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_ITEMBOX), gpScreen,
-               PAL_XY(xBase, yBase - iPictureYOffset));
-
-            if (PAL_MKFReadChunk(bufImage, 2048,
-               gpGlobals->g.rgObject[wObject].item.wBitmap, gpGlobals->f.fpBALL) > 0)
-            {
-               PAL_RLEBlitToSurface(bufImage, gpScreen, PAL_XY(xBase + 8, yBase + 7 - iPictureYOffset));
-            }
+            fCursorVisible = TRUE;
          }
 
          //
@@ -218,12 +249,43 @@ PAL_ItemSelectMenuUpdate(
       }
    }
 
-   //
-   // Draw the cursor on the current selected item
-   //
-   PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR), gpScreen, cursorPos);
-
    wObject = gpGlobals->rgInventory[gpGlobals->iCurInvMenuItem].wItem;
+
+   //
+   // Always draw the picture of current selected item
+   //
+#if defined(__IOS__)
+   {
+      LPCBITMAPRLE pItemBox = PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_ITEMBOX);
+      PAL_DrawHextechBoxToScreen(
+         xBase,
+         yBase - iPictureYOffset,
+         pItemBox ? PAL_RLEGetWidth(pItemBox) : 70,
+         pItemBox ? PAL_RLEGetHeight(pItemBox) : 60,
+         4,
+         0
+      );
+   }
+#else
+   PAL_RLEBlitToSurfaceWithShadow(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_ITEMBOX), gpScreen,
+      PAL_XY(xBase + 5, yBase + 5 - iPictureYOffset), TRUE);
+   PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_ITEMBOX), gpScreen,
+      PAL_XY(xBase, yBase - iPictureYOffset));
+#endif
+
+   if (wObject != 0 && PAL_MKFReadChunk(bufImage, 2048,
+      gpGlobals->g.rgObject[wObject].item.wBitmap, gpGlobals->f.fpBALL) > 0)
+   {
+      PAL_RLEBlitToSurface(bufImage, gpScreen, PAL_XY(xBase + 8, yBase + 7 - iPictureYOffset));
+   }
+
+   //
+   // Draw the cursor on the current selected item if on current page
+   //
+   if (fCursorVisible)
+   {
+      PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR), gpScreen, cursorPos);
+   }
 
    //
    // Draw the description of the selected item
@@ -231,7 +293,7 @@ PAL_ItemSelectMenuUpdate(
    if (!gConfig.fIsWIN95)
    {
       if (!g_fNoDesc && gpGlobals->lpObjectDesc != NULL)
-	  {
+      {
          WCHAR szDesc[512], *next;
          const WCHAR *d = PAL_GetObjectDesc(gpGlobals->lpObjectDesc, wObject);
 
@@ -284,22 +346,18 @@ PAL_ItemSelectMenuUpdate(
       }
    }
 
-   if (g_InputState.dwKeyPress & kKeySearch)
+   if ((g_InputState.dwKeyPress & kKeySearch) || fTouchConfirm)
    {
       if ((gpGlobals->g.rgObject[wObject].item.wFlags & g_wItemFlags) &&
          (SHORT)gpGlobals->rgInventory[gpGlobals->iCurInvMenuItem].nAmount >
          (SHORT)gpGlobals->rgInventory[gpGlobals->iCurInvMenuItem].nAmountInUse)
       {
-         if (gpGlobals->rgInventory[gpGlobals->iCurInvMenuItem].nAmount > 0)
+         if (gpGlobals->rgInventory[gpGlobals->iCurInvMenuItem].nAmount > 0 && fCursorVisible)
          {
-            j = (gpGlobals->iCurInvMenuItem < iItemsPerLine * iPageLineOffset) ? (gpGlobals->iCurInvMenuItem / iItemsPerLine) : iPageLineOffset;
+            j = (gpGlobals->iCurInvMenuItem / iItemsPerLine) - g_iInvTopRow;
             k = gpGlobals->iCurInvMenuItem % iItemsPerLine;
 
             PAL_DrawText(PAL_GetWord(wObject), PAL_XY(15 + k * iItemTextWidth, 12 + j * 18), MENUITEM_COLOR_CONFIRMED, FALSE, FALSE, FALSE);
-
-            //
-            // Draw the cursor on the current selected item
-            //
             PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR), gpScreen, cursorPos);
          }
 
@@ -314,23 +372,11 @@ VOID
 PAL_ItemSelectMenuInit(
    WORD                      wItemFlags
 )
-/*++
-  Purpose:
-
-    Initialize the item selection menu.
-
-  Parameters:
-
-    [IN]  wItemFlags - flags for usable item.
-
-  Return value:
-
-    None.
-
---*/
 {
    int           i, j;
    WORD          w;
+   const int     iItemsPerLine = 32 / gConfig.dwWordLength;
+   const int     iLinesPerPage = 7 - gConfig.ScreenLayout.ExtraItemDescLines;
 
    g_wItemFlags = wItemFlags;
 
@@ -374,6 +420,21 @@ PAL_ItemSelectMenuInit(
          }
       }
    }
+
+   if (gpGlobals->iCurInvMenuItem < 0)
+      gpGlobals->iCurInvMenuItem = 0;
+   if (g_iNumInventory > 0 && gpGlobals->iCurInvMenuItem >= g_iNumInventory)
+      gpGlobals->iCurInvMenuItem = g_iNumInventory - 1;
+
+   {
+      int totalRows = (g_iNumInventory + iItemsPerLine - 1) / iItemsPerLine;
+      int maxTop = (totalRows > iLinesPerPage) ? (totalRows - iLinesPerPage) : 0;
+      g_iInvTopRow = (gpGlobals->iCurInvMenuItem / iItemsPerLine) - (iLinesPerPage / 2);
+      if (g_iInvTopRow < 0) g_iInvTopRow = 0;
+      if (g_iInvTopRow > maxTop) g_iInvTopRow = maxTop;
+   }
+
+   PAL_TouchClearGestures();
 }
 
 WORD
@@ -381,28 +442,13 @@ PAL_ItemSelectMenu(
    LPITEMCHANGED_CALLBACK    lpfnMenuItemChanged,
    WORD                      wItemFlags
 )
-/*++
-  Purpose:
-
-    Show the item selection menu.
-
-  Parameters:
-
-    [IN]  lpfnMenuItemChanged - Callback function which is called when user
-                                changed the current menu item.
-
-    [IN]  wItemFlags - flags for usable item.
-
-  Return value:
-
-    The object ID of the selected item. 0 if cancelled.
-
---*/
 {
    int              iPrevIndex;
    WORD             w;
    DWORD            dwTime;
+   PALTOUCHMODE     prevTouchMode = PAL_TouchGetMode();
 
+   PAL_TouchSetMode(kTouchModeMenu);
    PAL_ItemSelectMenuInit(wItemFlags);
    iPrevIndex = gpGlobals->iCurInvMenuItem;
 
@@ -424,29 +470,6 @@ PAL_ItemSelectMenu(
       }
 
       w = PAL_ItemSelectMenuUpdate();
-      VIDEO_UpdateScreen(NULL);
-
-      PAL_ClearKeyState();
-
-      PAL_ProcessEvent();
-      while (!SDL_TICKS_PASSED(SDL_GetTicks(), dwTime))
-      {
-         PAL_ProcessEvent();
-         if (g_InputState.dwKeyPress != 0)
-         {
-            break;
-         }
-         SDL_Delay(5);
-      }
-
-      dwTime = SDL_GetTicks() + FRAME_TIME;
-
-      if (w != 0xFFFF)
-      {
-         g_fNoDesc = FALSE;
-         return w;
-      }
-
       if (iPrevIndex != gpGlobals->iCurInvMenuItem)
       {
          if (gpGlobals->iCurInvMenuItem >= 0 && gpGlobals->iCurInvMenuItem < MAX_INVENTORY)
@@ -456,11 +479,33 @@ PAL_ItemSelectMenu(
                (*lpfnMenuItemChanged)(gpGlobals->rgInventory[gpGlobals->iCurInvMenuItem].wItem);
             }
          }
-
          iPrevIndex = gpGlobals->iCurInvMenuItem;
       }
+      VIDEO_UpdateScreen(NULL);
+
+      PAL_ClearKeyState();
+
+      if (w != 0xFFFF)
+      {
+         g_fNoDesc = FALSE;
+         PAL_TouchSetMode(prevTouchMode);
+         return w;
+      }
+
+      PAL_ProcessEvent();
+      while (!SDL_TICKS_PASSED(SDL_GetTicks(), dwTime))
+      {
+         PAL_ProcessEvent();
+         if (g_InputState.dwKeyPress != 0 || PAL_TouchHasPendingInput())
+         {
+            break;
+         }
+         SDL_Delay(5);
+      }
+
+      dwTime = SDL_GetTicks() + (1000 / FPS);
    }
 
-   assert(FALSE);
-   return 0; // should not really reach here
+   PAL_TouchSetMode(prevTouchMode);
+   return 0;
 }

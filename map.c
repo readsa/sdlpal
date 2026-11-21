@@ -21,6 +21,7 @@
 
 #include "palcommon.h"
 #include "map.h"
+#include "video.h"
 
 LPPALMAP
 PAL_LoadMap(
@@ -384,12 +385,12 @@ PAL_MapBlitToSurface(
    LPCBITMAPRLE     lpBitmap = NULL;
 
    //
-   // Convert the coordinate
+   // Convert the coordinate (using floor division for negative zoomed-out camera coords)
    //
-   sy = lpSrcRect->y / 16 - 1;
-   dy = (lpSrcRect->y + lpSrcRect->h) / 16 + 2;
-   sx = lpSrcRect->x / 32 - 1;
-   dx = (lpSrcRect->x + lpSrcRect->w) / 32 + 2;
+   sy = ((lpSrcRect->y >= 0) ? (lpSrcRect->y / 16) : ((lpSrcRect->y - 15) / 16)) - 1;
+   dy = ((lpSrcRect->y + lpSrcRect->h >= 0) ? ((lpSrcRect->y + lpSrcRect->h) / 16) : ((lpSrcRect->y + lpSrcRect->h - 15) / 16)) + 2;
+   sx = ((lpSrcRect->x >= 0) ? (lpSrcRect->x / 32) : ((lpSrcRect->x - 31) / 32)) - 1;
+   dx = ((lpSrcRect->x + lpSrcRect->w >= 0) ? ((lpSrcRect->x + lpSrcRect->w) / 32) : ((lpSrcRect->x + lpSrcRect->w - 31) / 32)) + 2;
 
    //
    // Do the drawing.
@@ -402,14 +403,25 @@ PAL_MapBlitToSurface(
          xPos = sx * 32 + h * 16 - 16 - lpSrcRect->x;
          for (x = sx; x < dx; x++, xPos += 32)
          {
-            lpBitmap = PAL_MapGetTileBitmap((BYTE)x, (BYTE)y, (BYTE)h, ucLayer, lpMap);
-            if (lpBitmap == NULL)
+            if (x < 0 || x >= 64 || y < 0 || y >= 128)
             {
-               if (ucLayer)
+               if (ucLayer || lpSurface != gpScreen)
                {
                   continue;
                }
                lpBitmap = PAL_MapGetTileBitmap(0, 0, 0, ucLayer, lpMap);
+            }
+            else
+            {
+               lpBitmap = PAL_MapGetTileBitmap((BYTE)x, (BYTE)y, (BYTE)h, ucLayer, lpMap);
+               if (lpBitmap == NULL)
+               {
+                  if (ucLayer)
+                  {
+                     continue;
+                  }
+                  lpBitmap = PAL_MapGetTileBitmap(0, 0, 0, ucLayer, lpMap);
+               }
             }
             PAL_RLEBlitToSurface(lpBitmap, lpSurface, PAL_XY(xPos, yPos));
          }

@@ -25,7 +25,7 @@
 #include "common.h"
 
 #define    FPS             10
-#define    FRAME_TIME      (1000 / FPS)
+#define    FRAME_TIME      PAL_GetFrameTime()
 
 PAL_C_LINKAGE
 VOID

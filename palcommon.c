@@ -20,9 +20,11 @@
 //
 
 #include "palcommon.h"
+#include "video.h"
 #include "video_gpu.h"
 #include "global.h"
 #include "palcfg.h"
+#include "touch_ui.h"
 
 PAL_FORCE_INLINE
 BYTE
@@ -82,6 +84,8 @@ PAL_RLEBlitToSurfaceWithShadow(
    INT           dx          = PAL_X(pos);
    INT           dy          = PAL_Y(pos);
    LPBYTE        p;
+   uint8_t      *uiMask      = (lpDstSurface == gpScreen && !g_bInsideMakeScene)
+                                 ? VIDEO_GetSurfaceUiMask(gpScreen, TRUE) : NULL;
 
    //
    // Check for NULL pointer.
@@ -205,6 +209,13 @@ PAL_RLEBlitToSurfaceWithShadow(
                for (; k != 0; k--)
                {
                   p[x] = PAL_CalcShadowColor(p[x]);
+                  if (uiMask != NULL && x >= 0 && x < 320 && y >= 0 && y < 200)
+                  {
+                     if (uiMask[y * 320 + x] < 150)
+                     {
+                        uiMask[y * 320 + x] = 150;
+                     }
+                  }
                   x++;
                }
             }
@@ -213,6 +224,12 @@ PAL_RLEBlitToSurfaceWithShadow(
                for (; k != 0; k--)
                {
                   p[x] = lpBitmapRLE[j];
+                  if (uiMask != NULL && x >= 0 && x < 320 && y >= 0 && y < 200)
+                  {
+                     uint8_t pm = uiMask[y * 320 + x];
+                     BOOL inHex = (pm >= UIMASK_HEX_SHADOW && pm <= UIMASK_MAT_MAX) || (pm >= UIMASK_TEXT_SCROLL_INK && pm <= UIMASK_TEXT_LIGHT_REMAP);
+                     uiMask[y * 320 + x] = inHex ? UIMASK_HEX_FG : 255;
+                  }
                   j++;
                   x++;
                }
@@ -286,6 +303,8 @@ PAL_RLEBlitWithColorShift(
    INT           dx          = PAL_X(pos);
    INT           dy          = PAL_Y(pos);
    LPBYTE        p;
+   uint8_t      *uiMask      = (lpDstSurface == gpScreen && !g_bInsideMakeScene)
+                                 ? VIDEO_GetSurfaceUiMask(gpScreen, TRUE) : NULL;
 
    //
    // Check for NULL pointer.
@@ -420,6 +439,12 @@ PAL_RLEBlitWithColorShift(
                }
 
                p[x] = (b | (lpBitmapRLE[j] & 0xF0));
+               if (uiMask != NULL && x >= 0 && x < 320 && y >= 0 && y < 200)
+               {
+                  uint8_t pm = uiMask[y * 320 + x];
+                  BOOL inHex = (pm >= UIMASK_HEX_SHADOW && pm <= UIMASK_MAT_MAX) || (pm >= UIMASK_TEXT_SCROLL_INK && pm <= UIMASK_TEXT_LIGHT_REMAP);
+                  uiMask[y * 320 + x] = inHex ? UIMASK_HEX_FG : 255;
+               }
                j++;
                x++;
             }
@@ -495,6 +520,8 @@ PAL_RLEBlitMonoColor(
    INT           dx          = PAL_X(pos);
    INT           dy          = PAL_Y(pos);
    LPBYTE        p;
+   uint8_t      *uiMask      = (lpDstSurface == gpScreen && !g_bInsideMakeScene)
+                                 ? VIDEO_GetSurfaceUiMask(gpScreen, TRUE) : NULL;
 
    //
    // Check for NULL pointer.
@@ -630,6 +657,12 @@ PAL_RLEBlitMonoColor(
                }
 
                p[x] = (b | bColor);
+               if (uiMask != NULL && x >= 0 && x < 320 && y >= 0 && y < 200)
+               {
+                  uint8_t pm = uiMask[y * 320 + x];
+                  BOOL inHex = (pm >= UIMASK_HEX_SHADOW && pm <= UIMASK_MAT_MAX) || (pm >= UIMASK_TEXT_SCROLL_INK && pm <= UIMASK_TEXT_LIGHT_REMAP);
+                  uiMask[y * 320 + x] = inHex ? UIMASK_HEX_FG : 255;
+               }
                j++;
                x++;
             }
@@ -693,6 +726,16 @@ PAL_FBPBlitToSurface(
       lpDstSurface->w != 320 || lpDstSurface->h != 200)
    {
       return -1;
+   }
+
+   if (lpDstSurface == gpScreen)
+   {
+      uint8_t *uiMask = VIDEO_GetSurfaceUiMask(gpScreen, TRUE);
+      if (uiMask != NULL)
+      {
+         memset(uiMask, 255, 320 * 200);
+      }
+      g_fSceneCleanForZoom = FALSE;
    }
 
    //

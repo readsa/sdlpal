@@ -105,8 +105,12 @@ PAL_PlayerInfoBox(
    //
    // Draw the box
    //
+#if defined(__IOS__)
+   PAL_DrawHextechBoxToScreen(PAL_X(pos) - 2, PAL_Y(pos) - 3, 77, 38, 0, 0);
+#else
    PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_PLAYERINFOBOX),
       gpScreen, pos);
+#endif
 
    //
    // Draw the player face
@@ -413,29 +417,107 @@ PAL_BattleUIDrawMiscMenu(
    }
 }
 
+static int
+PAL_BattleHitTestEnemy(
+   int tapX,
+   int tapY
+)
+{
+   int i, bestEnemy = -1, bestDistSq = 0x7FFFFFFF;
+
+   for (i = 0; i <= g_Battle.wMaxEnemyIndex; i++)
+   {
+      if (g_Battle.rgEnemy[i].wObjectID == 0)
+      {
+         continue;
+      }
+      LPCBITMAPRLE lpFrame = PAL_SpriteGetFrame(g_Battle.rgEnemy[i].lpSprite, g_Battle.rgEnemy[i].wCurrentFrame);
+      int ex = PAL_X(g_Battle.rgEnemy[i].pos);
+      int ey = PAL_Y(g_Battle.rgEnemy[i].pos);
+      int w = lpFrame ? PAL_RLEGetWidth(lpFrame) : 44;
+      int h = lpFrame ? PAL_RLEGetHeight(lpFrame) : 52;
+      int hw = (w / 2 > 22) ? (w / 2) : 22;
+      int hh = (h > 38) ? h : 38;
+
+      if (tapX >= ex - hw && tapX <= ex + hw && tapY >= ey - hh - 6 && tapY <= ey + 10)
+      {
+         int cx = ex;
+         int cy = ey - hh / 2;
+         int d2 = (tapX - cx) * (tapX - cx) + (tapY - cy) * (tapY - cy);
+         if (d2 < bestDistSq)
+         {
+            bestDistSq = d2;
+            bestEnemy = i;
+         }
+      }
+   }
+
+   return bestEnemy;
+}
+
+static int
+PAL_BattleHitTestPlayer(
+   int tapX,
+   int tapY
+)
+{
+   int i;
+
+   // 1. Check bottom PlayerInfoBox cards
+   if (tapY >= 158 && tapY <= 200)
+   {
+      for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
+      {
+         int bx = 91 + 77 * i - 2;
+         if (tapX >= bx && tapX <= bx + 77)
+         {
+            return i;
+         }
+      }
+   }
+
+   // 2. Check battlefield player sprites
+   for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
+   {
+      int px = g_rgPlayerPos[gpGlobals->wMaxPartyMemberIndex][i][0];
+      int py = g_rgPlayerPos[gpGlobals->wMaxPartyMemberIndex][i][1];
+      if (tapX >= px - 22 && tapX <= px + 22 && tapY >= py - 62 && tapY <= py + 8)
+      {
+         return i;
+      }
+   }
+
+   return -1;
+}
+
 static WORD
 PAL_BattleUIMiscMenuUpdate(
    VOID
 )
-/*++
-  Purpose:
-
-    Update the misc menu.
-
-  Parameters:
-
-    None.
-
-  Return value:
-
-    The selected item number. 0 if cancelled, 0xFFFF if not confirmed.
-
---*/
 {
+   INT tapX = 0, tapY = 0;
+
    //
    // Draw the menu
    //
    PAL_BattleUIDrawMiscMenu(g_iCurMiscMenuItem, FALSE);
+
+   if (PAL_TouchPollTap(&tapX, &tapY))
+   {
+      for (int i = 0; i < 5; i++)
+      {
+         int iy = 32 + 18 * i;
+         if (tapX >= 2 && tapX <= 88 && tapY >= iy - 3 && tapY <= iy + 15)
+         {
+            g_iCurMiscMenuItem = i;
+            return (WORD)(i + 1);
+         }
+      }
+      if (tapX > 92 || tapY > 128 || tapY < 16)
+      {
+         return 0;
+      }
+   }
 
    //
    // Process inputs
@@ -472,23 +554,10 @@ static WORD
 PAL_BattleUIMiscItemSubMenuUpdate(
    VOID
 )
-/*++
-  Purpose:
-
-    Update the item sub menu of the misc menu.
-
-  Parameters:
-
-    None.
-
-  Return value:
-
-    The selected item number. 0 if cancelled, 0xFFFF if not confirmed.
-
---*/
 {
    int             i;
    BYTE            bColor;
+   INT             tapX = 0, tapY = 0;
 
    MENUITEM rgMenuItem[] = {
       // value   label                      enabled   position
@@ -519,6 +588,23 @@ PAL_BattleUIMiscItemSubMenuUpdate(
       }
 
       PAL_DrawText(PAL_GetWord(rgMenuItem[i].wNumWord), rgMenuItem[i].pos, bColor, TRUE, FALSE, FALSE);
+   }
+
+   if (PAL_TouchPollTap(&tapX, &tapY))
+   {
+      for (i = 0; i < 2; i++)
+      {
+         int iy = 62 + 18 * i;
+         if (tapX >= 28 && tapX <= 114 && tapY >= iy - 3 && tapY <= iy + 15)
+         {
+            g_iCurSubMenuItem = i;
+            return (WORD)(i + 1);
+         }
+      }
+      if (tapX > 118 || tapY < 44 || tapY > 106)
+      {
+         return 0;
+      }
    }
 
    //
@@ -781,6 +867,78 @@ PAL_BattleUIPickAutoMagic(
    return wMagic;
 }
 
+static BATTLEUISTATE g_prevBattleUIState = kBattleUIWait;
+static int           g_iTouchLockedTarget = -1;
+
+INT
+PAL_BattleGetHighlightedEnemy(
+   VOID
+)
+{
+   if (g_Battle.UI.state == kBattleUISelectTargetEnemy)
+   {
+      return g_Battle.UI.iSelectedIndex;
+   }
+   if (g_Battle.UI.state == kBattleUISelectMove &&
+       g_Battle.UI.MenuState == kBattleMenuMain &&
+       g_iTouchLockedTarget >= 0)
+   {
+      return g_iTouchLockedTarget;
+   }
+   return -1;
+}
+
+INT
+PAL_BattleGetHighlightedPlayer(
+   VOID
+)
+{
+   if (g_Battle.UI.state == kBattleUISelectTargetPlayer)
+   {
+      return g_Battle.UI.iSelectedIndex;
+   }
+   if (g_Battle.UI.state == kBattleUISelectTargetPlayerAll)
+   {
+      return -2;
+   }
+   return -1;
+}
+
+BOOL
+PAL_BattleIsActionValidForUI(
+   INT          iActionIdx
+)
+{
+   switch (iActionIdx)
+   {
+   case 0:  return PAL_BattleUIIsActionValid(kBattleUIActionAttack);
+   case 1:  return PAL_BattleUIIsActionValid(kBattleUIActionMagic);
+   case 2:  return PAL_BattleUIIsActionValid(kBattleUIActionCoopMagic);
+   case 3:  return PAL_BattleUIIsActionValid(kBattleUIActionMisc);
+   default: return FALSE;
+   }
+}
+
+static VOID
+PAL_BattleDrawTargetConfirmBox(
+   LPCWSTR lpszTargetName,
+   BOOL    fLocked
+)
+{
+   if (lpszTargetName == NULL) return;
+   PAL_CreateSingleLineBox(PAL_XY(96, 4), 7, FALSE);
+   PAL_DrawText(lpszTargetName, PAL_XY(110, 13),
+      fLocked ? MENUITEM_COLOR_SELECTED : MENUITEM_COLOR, TRUE, FALSE, FALSE);
+   if (fLocked)
+   {
+      LPCBITMAPRLE lpCur = PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR_YELLOW);
+      if (lpCur != NULL)
+      {
+         PAL_RLEBlitToSurface(lpCur, gpScreen, PAL_XY(214, 18));
+      }
+   }
+}
+
 VOID
 PAL_BattleUIUpdate(
    VOID
@@ -818,6 +976,27 @@ PAL_BattleUIUpdate(
 
 
    s_iFrame++;
+
+   if (g_Battle.UI.state != g_prevBattleUIState)
+   {
+      g_iTouchLockedTarget = -1;
+      g_prevBattleUIState = g_Battle.UI.state;
+   }
+
+   // Sync touch HUD mode with current battle state
+   PAL_TouchSetBattleAutoHint(g_Battle.UI.fAutoAttack && !gpGlobals->fAutoBattle);
+   if (g_Battle.UI.fAutoAttack || gpGlobals->fAutoBattle || g_Battle.UI.state == kBattleUIWait)
+   {
+      PAL_TouchSetMode(kTouchModeBattleWait);
+   }
+   else if (g_Battle.UI.state == kBattleUISelectMove && g_Battle.UI.MenuState == kBattleMenuMain)
+   {
+      PAL_TouchSetMode(kTouchModeBattleMain);
+   }
+   else
+   {
+      PAL_TouchSetMode(kTouchModeBattleSub);
+   }
 
    if (g_Battle.UI.fAutoAttack && !gpGlobals->fAutoBattle)
    {
@@ -885,6 +1064,7 @@ PAL_BattleUIUpdate(
       g_Battle.UI.MenuState = kBattleMenuMain;
    }
 
+#if !defined(__IOS__)
 #ifdef PAL_CLASSIC
    if (g_Battle.Phase == kBattlePhasePerformAction)
    {
@@ -926,6 +1106,14 @@ PAL_BattleUIUpdate(
             w, j, FALSE);
       }
    }
+#else
+#ifdef PAL_CLASSIC
+   if (g_Battle.Phase == kBattlePhasePerformAction)
+   {
+      goto end;
+   }
+#endif
+#endif
 
    if (g_InputState.dwKeyPress & kKeyStatus)
    {
@@ -1060,6 +1248,7 @@ PAL_BattleUIUpdate(
             g_Battle.UI.wSelectedAction = 0;
          }
 
+#if !defined(__IOS__)
          for (i = 0; i < 4; i++)
          {
             if (g_Battle.UI.wSelectedAction == i)
@@ -1078,10 +1267,100 @@ PAL_BattleUIUpdate(
                   gpScreen, rgItems[i].pos, 0x10, -4);
             }
          }
+#endif
 
          switch (g_Battle.UI.MenuState)
          {
          case kBattleMenuMain:
+         {
+            INT tapX = 0, tapY = 0;
+            BOOL fCommittedByTap = FALSE;
+
+            if (PAL_TouchPollTap(&tapX, &tapY))
+            {
+               int bestIcon = -1;
+               int bestDistSq = 0x7FFFFFFF;
+               for (i = 0; i < 4; i++)
+               {
+                  LPCBITMAPRLE iconBmp = PAL_SpriteGetFrame(gpSpriteUI, rgItems[i].iSpriteNum);
+                  int ix = PAL_X(rgItems[i].pos);
+                  int iy = PAL_Y(rgItems[i].pos);
+                  int iw = iconBmp ? PAL_RLEGetWidth(iconBmp) : 28;
+                  int ih = iconBmp ? PAL_RLEGetHeight(iconBmp) : 28;
+                  if (tapX >= ix - 4 && tapX <= ix + iw + 4 && tapY >= iy - 4 && tapY <= iy + ih + 4)
+                  {
+                     int cx = ix + iw / 2;
+                     int cy = iy + ih / 2;
+                     int d2 = (tapX - cx) * (tapX - cx) + (tapY - cy) * (tapY - cy);
+                     if (d2 < bestDistSq)
+                     {
+                        bestDistSq = d2;
+                        bestIcon = i;
+                     }
+                  }
+               }
+
+               if (bestIcon >= 0)
+               {
+                  if (PAL_BattleUIIsActionValid(rgItems[bestIcon].action))
+                  {
+                     g_Battle.UI.wSelectedAction = (WORD)bestIcon;
+                     g_InputState.dwKeyPress |= kKeySearch;
+                  }
+               }
+               else
+               {
+                  int hitEnemy = PAL_BattleHitTestEnemy(tapX, tapY);
+                  if (hitEnemy >= 0)
+                  {
+                     int nAliveEnemies = 0;
+                     for (i = 0; i <= g_Battle.wMaxEnemyIndex; i++)
+                     {
+                        if (g_Battle.rgEnemy[i].wObjectID != 0)
+                        {
+                           nAliveEnemies++;
+                        }
+                     }
+
+                     g_Battle.UI.wActionType = kBattleActionAttack;
+                     if (PAL_PlayerCanAttackAll(gpGlobals->rgParty[g_Battle.UI.wCurPlayerIndex].wPlayerRole))
+                     {
+                        g_Battle.UI.iSelectedIndex = -1;
+                        PAL_BattleCommitAction(FALSE);
+                        fCommittedByTap = TRUE;
+                     }
+                     else if (nAliveEnemies <= 1)
+                     {
+                        g_Battle.UI.iSelectedIndex = hitEnemy;
+                        PAL_BattleCommitAction(FALSE);
+                        fCommittedByTap = TRUE;
+                     }
+                     else
+                     {
+                        // Multi-enemy battle: 1st tap highlights & locks enemy, 2nd tap confirms!
+                        g_Battle.UI.state = kBattleUISelectTargetEnemy;
+                        g_Battle.UI.iSelectedIndex = hitEnemy;
+                        g_iTouchLockedTarget = hitEnemy;
+                        g_prevBattleUIState = kBattleUISelectTargetEnemy;
+                        fCommittedByTap = TRUE;
+                     }
+                  }
+                  else
+                  {
+                     int hitAlly = PAL_BattleHitTestPlayer(tapX, tapY);
+                     if (hitAlly >= 0 && hitAlly != (int)g_Battle.UI.wCurPlayerIndex)
+                     {
+                        g_InputState.dwKeyPress |= kKeyMenu;
+                     }
+                  }
+               }
+            }
+
+            if (fCommittedByTap)
+            {
+               break;
+            }
+
             if (g_InputState.dwKeyPress & kKeySearch)
             {
                switch (g_Battle.UI.wSelectedAction)
@@ -1292,14 +1571,15 @@ PAL_BattleUIUpdate(
                   }
                }
 
-               if (j != -1)
-               {
-                  g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].flTimeMeter = flMin - 99;
-                  g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].state = kFighterWait;
-                  g_Battle.UI.state = kBattleUIWait;
-               }
-            }
+                if (j != -1)
+                {
+                   g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].flTimeMeter = flMin - 99;
+                   g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].state = kFighterWait;
+                   g_Battle.UI.state = kBattleUIWait;
+                }
+             }
 #endif
+            }
             break;
 
          case kBattleMenuMagicSelect:
@@ -1493,20 +1773,63 @@ PAL_BattleUIUpdate(
       }
 
       //
-      // Highlight the selected enemy
+      // Highlight the selected enemy + draw overhead target pointer & confirmation box
       //
-      if (s_iFrame & 1)
       {
          i = g_Battle.UI.iSelectedIndex;
+         LPCBITMAPRLE lpEnemyFrame = PAL_SpriteGetFrame(g_Battle.rgEnemy[i].lpSprite, g_Battle.rgEnemy[i].wCurrentFrame);
+         int ew = lpEnemyFrame ? PAL_RLEGetWidth(lpEnemyFrame) : 40;
+         int eh = lpEnemyFrame ? PAL_RLEGetHeight(lpEnemyFrame) : 50;
 
-         x = PAL_X(g_Battle.rgEnemy[i].pos);
-         y = PAL_Y(g_Battle.rgEnemy[i].pos);
+         x = PAL_X(g_Battle.rgEnemy[i].pos) - ew / 2;
+         y = PAL_Y(g_Battle.rgEnemy[i].pos) - eh;
 
-         x -= PAL_RLEGetWidth(PAL_SpriteGetFrame(g_Battle.rgEnemy[i].lpSprite, g_Battle.rgEnemy[i].wCurrentFrame)) / 2;
-         y -= PAL_RLEGetHeight(PAL_SpriteGetFrame(g_Battle.rgEnemy[i].lpSprite, g_Battle.rgEnemy[i].wCurrentFrame));
+         if (s_iFrame & 1)
+         {
+            PAL_RLEBlitWithColorShift(lpEnemyFrame, gpScreen, PAL_XY(x, y), 7);
+         }
 
-         PAL_RLEBlitWithColorShift(PAL_SpriteGetFrame(g_Battle.rgEnemy[i].lpSprite, g_Battle.rgEnemy[i].wCurrentFrame),
-            gpScreen, PAL_XY(x, y), 7);
+         j = (s_iFrame & 1) ? SPRITENUM_BATTLE_ARROW_SELECTEDPLAYER_RED : SPRITENUM_BATTLE_ARROW_SELECTEDPLAYER;
+         int arrowX = PAL_X(g_Battle.rgEnemy[i].pos) - 8;
+         int arrowY = y - 16;
+         if (arrowY < 2) arrowY = 2;
+         PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, j), gpScreen, PAL_XY(arrowX, arrowY));
+
+         PAL_BattleDrawTargetConfirmBox(
+            PAL_GetWord(g_Battle.rgEnemy[i].wObjectID),
+            (g_iTouchLockedTarget == g_Battle.UI.iSelectedIndex)
+         );
+      }
+
+      {
+         INT tapX = 0, tapY = 0;
+         if (PAL_TouchPollTap(&tapX, &tapY))
+         {
+            if (g_iTouchLockedTarget == g_Battle.UI.iSelectedIndex &&
+                tapX >= 94 && tapX <= 242 && tapY >= 2 && tapY <= 38)
+            {
+               g_iTouchLockedTarget = -1;
+               PAL_BattleCommitAction(FALSE);
+               break;
+            }
+            int hitEnemy = PAL_BattleHitTestEnemy(tapX, tapY);
+            if (hitEnemy >= 0)
+            {
+               if (hitEnemy == g_Battle.UI.iSelectedIndex && g_iTouchLockedTarget == hitEnemy)
+               {
+                  // 2nd tap on already-highlighted enemy -> Confirm action!
+                  g_iTouchLockedTarget = -1;
+                  PAL_BattleCommitAction(FALSE);
+                  break;
+               }
+               else
+               {
+                  // 1st tap -> Highlight & lock onto enemy first!
+                  g_Battle.UI.iSelectedIndex = hitEnemy;
+                  g_iTouchLockedTarget = hitEnemy;
+               }
+            }
+         }
       }
 
       if (g_InputState.dwKeyPress & kKeyMenu)
@@ -1554,11 +1877,13 @@ PAL_BattleUIUpdate(
       }
 #endif
 
+#if !defined(__IOS__)
       for (i = 0; i < 4; i++)
       {
          PAL_RLEBlitMonoColor(PAL_SpriteGetFrame(gpSpriteUI, rgItems[i].iSpriteNum),
             gpScreen, rgItems[i].pos, 0, -4);
       }
+#endif
 
 
       j = SPRITENUM_BATTLE_ARROW_SELECTEDPLAYER;
@@ -1568,12 +1893,61 @@ PAL_BattleUIUpdate(
       }
 
       //
-      // Draw arrows on the selected player
+      // Draw arrows on the selected player sprite + status card + confirmation box
       //
       x = g_rgPlayerPos[gpGlobals->wMaxPartyMemberIndex][g_Battle.UI.iSelectedIndex][0] - 8;
       y = g_rgPlayerPos[gpGlobals->wMaxPartyMemberIndex][g_Battle.UI.iSelectedIndex][1] - 67;
 
       PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, j), gpScreen, PAL_XY(x, y));
+
+      {
+#if !defined(__IOS__)
+         int curSprite = (g_iTouchLockedTarget == g_Battle.UI.iSelectedIndex)
+            ? SPRITENUM_CURSOR_YELLOW_UP : SPRITENUM_CURSOR_UP;
+         LPCBITMAPRLE lpCardCur = PAL_SpriteGetFrame(gpSpriteUI, curSprite);
+         if (lpCardCur != NULL)
+         {
+            PAL_RLEBlitToSurface(lpCardCur, gpScreen,
+               PAL_XY(91 + 77 * g_Battle.UI.iSelectedIndex + 30, 158));
+         }
+#endif
+         WORD wTargetRole = gpGlobals->rgParty[g_Battle.UI.iSelectedIndex].wPlayerRole;
+         PAL_BattleDrawTargetConfirmBox(
+            PAL_GetWord(gpGlobals->g.PlayerRoles.rgwName[wTargetRole]),
+            (g_iTouchLockedTarget == g_Battle.UI.iSelectedIndex)
+         );
+      }
+
+      {
+         INT tapX = 0, tapY = 0;
+         if (PAL_TouchPollTap(&tapX, &tapY))
+         {
+            if (g_iTouchLockedTarget == g_Battle.UI.iSelectedIndex &&
+                tapX >= 94 && tapX <= 242 && tapY >= 2 && tapY <= 38)
+            {
+               g_iTouchLockedTarget = -1;
+               PAL_BattleCommitAction(FALSE);
+               break;
+            }
+            int hitAlly = PAL_BattleHitTestPlayer(tapX, tapY);
+            if (hitAlly >= 0)
+            {
+               if (hitAlly == g_Battle.UI.iSelectedIndex && g_iTouchLockedTarget == hitAlly)
+               {
+                  // 2nd tap on already-highlighted teammate -> Confirm heal/revive/item!
+                  g_iTouchLockedTarget = -1;
+                  PAL_BattleCommitAction(FALSE);
+                  break;
+               }
+               else
+               {
+                  // 1st tap -> Highlight teammate sprite, status card & name box!
+                  g_Battle.UI.iSelectedIndex = hitAlly;
+                  g_iTouchLockedTarget = hitAlly;
+               }
+            }
+         }
+      }
 
       if (g_InputState.dwKeyPress & kKeyMenu)
       {
@@ -1647,6 +2021,13 @@ PAL_BattleUIUpdate(
                gpScreen, PAL_XY(x, y), 7);
          }
       }
+      {
+         INT tapX = 0, tapY = 0;
+         if (PAL_TouchPollTap(&tapX, &tapY) && tapY < 160)
+         {
+            g_InputState.dwKeyPress |= kKeySearch;
+         }
+      }
       if (g_InputState.dwKeyPress & kKeyMenu)
       {
          g_Battle.UI.state = kBattleUISelectMove;
@@ -1694,6 +2075,13 @@ PAL_BattleUIUpdate(
          PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, j), gpScreen, PAL_XY(x, y));
       }
 
+      {
+         INT tapX = 0, tapY = 0;
+         if (PAL_TouchPollTap(&tapX, &tapY))
+         {
+            g_InputState.dwKeyPress |= kKeySearch;
+         }
+      }
       if (g_InputState.dwKeyPress & kKeyMenu)
       {
          g_Battle.UI.state = kBattleUISelectMove;
@@ -1744,21 +2132,24 @@ end:
 #endif
 
    //
-   // Draw the numbers
+   // Draw the numbers (keep readable ~300ms float duration even in 2x/3x speed mode)
    //
-   for (i = 0; i < BATTLEUI_MAX_SHOWNUM; i++)
    {
-      if (g_Battle.UI.rgShowNum[i].wNum > 0)
+      const DWORD dwNumFrameMs = (PAL_GetSpeedPercent() > 100) ? 28 : 40;
+      for (i = 0; i < BATTLEUI_MAX_SHOWNUM; i++)
       {
-         if ((SDL_GetTicks() - g_Battle.UI.rgShowNum[i].dwTime) / BATTLE_FRAME_TIME > 10)
+         if (g_Battle.UI.rgShowNum[i].wNum > 0)
          {
-            g_Battle.UI.rgShowNum[i].wNum = 0;
-         }
-         else
-         {
-            PAL_DrawNumber(g_Battle.UI.rgShowNum[i].wNum, 5,
-               PAL_XY(PAL_X(g_Battle.UI.rgShowNum[i].pos), PAL_Y(g_Battle.UI.rgShowNum[i].pos) - (SDL_GetTicks() - g_Battle.UI.rgShowNum[i].dwTime) / BATTLE_FRAME_TIME),
-               g_Battle.UI.rgShowNum[i].color, kNumAlignRight);
+            if ((SDL_GetTicks() - g_Battle.UI.rgShowNum[i].dwTime) / dwNumFrameMs > 10)
+            {
+               g_Battle.UI.rgShowNum[i].wNum = 0;
+            }
+            else
+            {
+               PAL_DrawNumber(g_Battle.UI.rgShowNum[i].wNum, 5,
+                  PAL_XY(PAL_X(g_Battle.UI.rgShowNum[i].pos), PAL_Y(g_Battle.UI.rgShowNum[i].pos) - (SDL_GetTicks() - g_Battle.UI.rgShowNum[i].dwTime) / dwNumFrameMs),
+                  g_Battle.UI.rgShowNum[i].color, kNumAlignRight);
+            }
          }
       }
    }

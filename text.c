@@ -34,6 +34,7 @@
 #define   FONT_COLOR_RED_ALT        0x17
 
 BOOL      g_fUpdatedInBattle      = FALSE;
+BOOL      g_bDrawingTextShadow    = FALSE;
 
 static wchar_t internal_wbuffer[PAL_GLOBAL_BUFFER_SIZE];
 
@@ -1149,9 +1150,11 @@ PAL_DrawTextUnescape(
          // It is suspected that there is a bug in the original Win95 version, 
          // so sdlpal chose to use triple shadows for both.
          //
+         g_bDrawingTextShadow = TRUE;
          PAL_DrawCharOnSurface(*lpszText, gpScreen, PAL_XY(rect.x + 1, rect.y), 0, fUse8x8Font);
          PAL_DrawCharOnSurface(*lpszText, gpScreen, PAL_XY(rect.x, rect.y + 1), 0, fUse8x8Font);
          PAL_DrawCharOnSurface(*lpszText, gpScreen, PAL_XY(rect.x + 1, rect.y + 1), 0, fUse8x8Font);
+         g_bDrawingTextShadow = FALSE;
       }
       PAL_DrawCharOnSurface(*lpszText++, gpScreen, PAL_XY(rect.x, rect.y), bColor, fUse8x8Font);
       rect.x += char_width; urect.w += char_width;
@@ -1403,11 +1406,14 @@ PAL_DialogWaitForKeyWithMaximumSeconds(
       }
    }
 
+   PALTOUCHMODE prevTouchMode = PAL_TouchGetMode();
+   PAL_TouchSetMode(kTouchModeDialog);
+   VIDEO_UpdateScreen(NULL);
    PAL_ClearKeyState();
 
    while (TRUE)
    {
-      UTIL_Delay(100);
+      UTIL_Delay(50);
 
       if (g_TextLib.bDialogPosition != kDialogCenterWindow &&
          g_TextLib.bDialogPosition != kDialogCenter)
@@ -1435,6 +1441,8 @@ PAL_DialogWaitForKeyWithMaximumSeconds(
          break;
       }
    }
+
+   PAL_TouchSetMode(prevTouchMode);
 
    if (g_TextLib.bDialogPosition != kDialogCenterWindow &&
       g_TextLib.bDialogPosition != kDialogCenter)
@@ -1468,6 +1476,11 @@ TEXT_DisplayText(
    //
    WCHAR text[2];
    BYTE color, isNumber=0;
+   PALTOUCHMODE prevTouchMode = PAL_TouchGetMode();
+   if (!isDialog)
+   {
+      PAL_TouchSetMode(kTouchModeDialog);
+   }
    
    while (lpszText != NULL && *lpszText != '\0')
    {
@@ -1551,6 +1564,7 @@ TEXT_DisplayText(
                UTIL_Delay(wcstol(lpszText + 1, NULL, 10) * 80 / 7);
             g_TextLib.nCurrentDialogLine = -1;
             g_TextLib.fUserSkip = FALSE;
+            if (!isDialog) PAL_TouchSetMode(prevTouchMode);
             return x; // don't go further
             
          case ')':
@@ -1597,7 +1611,7 @@ TEXT_DisplayText(
             if (!isDialog && !g_TextLib.fUserSkip)
             {
                PAL_ClearKeyState();
-               UTIL_Delay(g_TextLib.iDelayTime * 8);
+               UTIL_Delay(PAL_ScaleDelayMs(g_TextLib.iDelayTime * 8));
                
                if (g_InputState.dwKeyPress & (kKeySearch | kKeyMenu))
                {
@@ -1608,6 +1622,10 @@ TEXT_DisplayText(
                }
             }
       }
+   }
+   if (!isDialog)
+   {
+      PAL_TouchSetMode(prevTouchMode);
    }
    return x;
 }
@@ -1636,6 +1654,7 @@ PAL_ShowDialogText(
 
    PAL_ClearKeyState();
    g_TextLib.bIcon = 0;
+   g_fSceneCleanForZoom = FALSE;
 
    if (gpGlobals->fInBattle && !g_fUpdatedInBattle)
    {

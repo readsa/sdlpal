@@ -22,7 +22,9 @@
 #include "font.h"
 #include "util.h"
 #include "text.h"
+#include "video.h"
 #include "video_gpu.h"
+#include "touch_ui.h"
 
 #define _FONT_C
 
@@ -606,17 +608,39 @@ PAL_DrawCharOnSurface(
 	//
 	// Draw the character to the surface.
 	//
-	LPBYTE dest = (LPBYTE)lpSurface->pixels + (int)max(y + y_offset, 0) * lpSurface->pitch + x;
+	int startRow = (int)max(y + y_offset, 0);
+	uint8_t *uiMask = (lpSurface == gpScreen && !g_bInsideMakeScene)
+		? VIDEO_GetSurfaceUiMask(gpScreen, TRUE) : NULL;
+	LPBYTE dest = (LPBYTE)lpSurface->pixels + startRow * lpSurface->pitch + x;
 	LPBYTE top = (LPBYTE)lpSurface->pixels + lpSurface->h * lpSurface->pitch;
+#define WRITE_GLYPH_UIMASK(mIdx) \
+	do { \
+		uint8_t _pm = uiMask[(mIdx)]; \
+		BOOL _inHex = (_pm >= UIMASK_HEX_SHADOW && _pm <= UIMASK_MAT_MAX) || (_pm >= UIMASK_TEXT_SCROLL_INK && _pm <= UIMASK_TEXT_LIGHT_REMAP); \
+		BOOL _onScroll = (_pm >= UIMASK_SCROLL_OUTER && _pm <= UIMASK_SCROLL_SHINE) || (_pm == UIMASK_TEXT_SCROLL_INK); \
+		if (g_bDrawingTextShadow) { \
+			uiMask[(mIdx)] = _inHex ? UIMASK_TEXT_SHADOW : 255; \
+		} else if (bColor == 0 && _inHex) { \
+			uiMask[(mIdx)] = _onScroll ? UIMASK_TEXT_SCROLL_INK : UIMASK_TEXT_LIGHT_REMAP; \
+		} else { \
+			uiMask[(mIdx)] = _inHex ? UIMASK_HEX_FG : 255; \
+		} \
+	} while (0)
+
 	if (fUse8x8Font)
 	{
 		for (i = 0; i < 8 && dest < top; i++, dest += lpSurface->pitch)
 		{
+			int curY = startRow + i;
 			for (j = 0; j < 8 && x + j < lpSurface->w; j++)
 			{
 				if (iso_font_8x8[wChar][i] & (1 << j))
 				{
 					dest[j] = bColor;
+					if (uiMask != NULL && x + j >= 0 && x + j < 320 && curY >= 0 && curY < 200)
+					{
+						WRITE_GLYPH_UIMASK(curY * 320 + x + j);
+					}
 				}
 			}
 		}
@@ -625,13 +649,19 @@ PAL_DrawCharOnSurface(
 	{
 		if (font_width[wChar] == 32)
 		{
-			for (i = 0; i < _font_height * 2 && dest < top; i += 2, dest += lpSurface->pitch)
+			int rowIdx = 0;
+			for (i = 0; i < _font_height * 2 && dest < top; i += 2, dest += lpSurface->pitch, rowIdx++)
 			{
+				int curY = startRow + rowIdx;
 				for (j = 0; j < 8 && x + j + x_offset < lpSurface->w && x + j + x_offset >= 0; j++)
 				{
 					if (unicode_font[wChar][i] & (1 << (7 - j)))
 					{
 						dest[j + x_offset] = bColor;
+						if (uiMask != NULL && curY >= 0 && curY < 200 && x + j + x_offset < 320)
+						{
+							WRITE_GLYPH_UIMASK(curY * 320 + (x + j + x_offset));
+						}
 					}
 				}
 				for (j = 0; j < 8 && x + j + 8 + x_offset < lpSurface->w && x + j + 8 + x_offset >= 0; j++)
@@ -639,6 +669,10 @@ PAL_DrawCharOnSurface(
 					if (unicode_font[wChar][i + 1] & (1 << (7 - j)))
 					{
 						dest[j + 8 + x_offset] = bColor;
+						if (uiMask != NULL && curY >= 0 && curY < 200 && x + j + 8 + x_offset < 320)
+						{
+							WRITE_GLYPH_UIMASK(curY * 320 + (x + j + 8 + x_offset));
+						}
 					}
 				}
 			}
@@ -647,16 +681,22 @@ PAL_DrawCharOnSurface(
 		{
 			for (i = 0; i < _font_height && dest < top; i++, dest += lpSurface->pitch)
 			{
+				int curY = startRow + i;
 				for (j = 0; j < 8 && x + j + x_offset < lpSurface->w && x + j + x_offset >= 0; j++)
 				{
 					if (unicode_font[wChar][i] & (1 << (7 - j)))
 					{
 						dest[j + x_offset] = bColor;
+						if (uiMask != NULL && curY >= 0 && curY < 200 && x + j + x_offset < 320)
+						{
+							WRITE_GLYPH_UIMASK(curY * 320 + (x + j + x_offset));
+						}
 					}
 				}
 			}
 		}
 	}
+#undef WRITE_GLYPH_UIMASK
 }
 
 int

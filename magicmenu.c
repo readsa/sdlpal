@@ -31,25 +31,12 @@ static struct MAGICITEM
 static int     g_iNumMagic = 0;
 static int     g_iCurrentItem = 0;
 static WORD    g_wPlayerMP = 0;
+static int     g_iMagicTopRow = 0;
 
 WORD
 PAL_MagicSelectionMenuUpdate(
    VOID
 )
-/*++
-  Purpose:
-
-    Update the magic selection menu.
-
-  Parameters:
-
-    None.
-
-  Return value:
-
-    The selected magic. 0 if cancelled, 0xFFFF if not confirmed.
-
---*/
 {
    int         i, j, k, line, item_delta;
    BYTE        bColor;
@@ -59,7 +46,11 @@ PAL_MagicSelectionMenuUpdate(
    const int   iLinesPerPage = 5 - gConfig.ScreenLayout.ExtraMagicDescLines;
    const int   iBoxYOffset = gConfig.ScreenLayout.ExtraMagicDescLines * 16;
    const int   iCursorXOffset = gConfig.dwWordLength * 5 / 2;
-   const int   iPageLineOffset = iLinesPerPage / 2;
+   const int   iTotalRows = (g_iNumMagic + iItemsPerLine - 1) / iItemsPerLine;
+   const int   iMaxTopRow = (iTotalRows > iLinesPerPage) ? (iTotalRows - iLinesPerPage) : 0;
+   BOOL        fTouchConfirm = FALSE;
+   INT         tapX = 0, tapY = 0;
+   INT         scrollRows = 0;
 
    //
    // Check for inputs
@@ -105,15 +96,68 @@ PAL_MagicSelectionMenuUpdate(
       item_delta = 0;
    }
 
+   if (g_iNumMagic <= 0)
+   {
+      PAL_CreateBoxWithShadow(PAL_XY(10, 42 + iBoxYOffset), iLinesPerPage - 1, 16, 1, FALSE, 0);
+      PAL_TouchPollTap(&tapX, &tapY);
+      PAL_TouchPollScrollRows(16);
+      return 0xFFFF;
+   }
+
    //
    // Make sure the current menu item index is in bound
    //
    if (g_iCurrentItem + item_delta < 0)
       g_iCurrentItem = 0;
    else if (g_iCurrentItem + item_delta >= g_iNumMagic)
-      g_iCurrentItem = g_iNumMagic-1;
+      g_iCurrentItem = g_iNumMagic - 1;
    else
       g_iCurrentItem += item_delta;
+
+   if (item_delta != 0)
+   {
+      int curRow = g_iCurrentItem / iItemsPerLine;
+      if (curRow < g_iMagicTopRow)
+         g_iMagicTopRow = curRow;
+      else if (curRow >= g_iMagicTopRow + iLinesPerPage)
+         g_iMagicTopRow = curRow - iLinesPerPage + 1;
+   }
+
+   scrollRows = PAL_TouchPollScrollRows(16);
+   if (scrollRows != 0)
+   {
+      g_iMagicTopRow += scrollRows;
+   }
+   if (g_iMagicTopRow < 0) g_iMagicTopRow = 0;
+   if (g_iMagicTopRow > iMaxTopRow) g_iMagicTopRow = iMaxTopRow;
+
+   if (PAL_TouchPollTap(&tapX, &tapY))
+   {
+      int boxTop = 48 + iBoxYOffset;
+      int boxBottom = 54 + iLinesPerPage * 18 + iBoxYOffset;
+      if (tapX >= 16 && tapX <= 306 && tapY >= boxTop && tapY < boxBottom)
+      {
+         int col = (tapX - 28) / iItemTextWidth;
+         int row = (tapY - (52 + iBoxYOffset)) / 18;
+         if (col < 0) col = 0;
+         if (col >= iItemsPerLine) col = iItemsPerLine - 1;
+         if (row < 0) row = 0;
+         if (row >= iLinesPerPage) row = iLinesPerPage - 1;
+
+         int tappedIdx = (g_iMagicTopRow + row) * iItemsPerLine + col;
+         if (tappedIdx >= 0 && tappedIdx < g_iNumMagic)
+         {
+            if (tappedIdx != g_iCurrentItem)
+            {
+               g_iCurrentItem = tappedIdx;
+            }
+            else
+            {
+               fTouchConfirm = TRUE;
+            }
+         }
+      }
+   }
 
    //
    // Create the box.
@@ -146,13 +190,10 @@ PAL_MagicSelectionMenuUpdate(
          WCHAR szDesc[512], *next;
          const WCHAR *d = PAL_GetObjectDesc(gpGlobals->lpObjectDesc, rgMagicItem[g_iCurrentItem].wMagic);
 
-         //
-         // Draw the magic description.
-         //
          if (d != NULL)
          {
             k = 3;
-		    wcscpy(szDesc, d);
+            wcscpy(szDesc, d);
             d = szDesc;
 
             while (TRUE)
@@ -175,9 +216,6 @@ PAL_MagicSelectionMenuUpdate(
             }
          }
 
-         //
-         // Draw the MP of the selected magic.
-         //
          PAL_CreateSingleLineBox(PAL_XY(0, 0), 5, FALSE);
          PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_SLASH),
             gpScreen, PAL_XY(45, 14));
@@ -197,16 +235,13 @@ PAL_MagicSelectionMenuUpdate(
             int line_incr = (gpGlobals->g.lprgScriptEntry[wScript].rgwOperand[1] != 1) ? 1 : 0;
             wScript = PAL_RunAutoScript(wScript, line);
             line += line_incr;
-	     }
+         }
          else
          {
             wScript = PAL_RunAutoScript(wScript, 0);
          }
       }
 
-      //
-      // Draw the MP of the selected magic.
-      //
       PAL_CreateSingleLineBox(PAL_XY(0, 0), PAL_X(gConfig.ScreenLayout.MagicMPDescLines), FALSE);
       PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_SLASH),
           gpScreen, gConfig.ScreenLayout.MagicMPSlashPos);
@@ -215,15 +250,10 @@ PAL_MagicSelectionMenuUpdate(
       PAL_DrawNumber(g_wPlayerMP, 4, gConfig.ScreenLayout.MagicMPCurrentPos, kNumColorCyan, kNumAlignRight);
    }
 
-
    //
    // Draw the texts of the current page
    //
-   i = g_iCurrentItem / iItemsPerLine * iItemsPerLine - iItemsPerLine * iPageLineOffset;
-   if (i < 0)
-   {
-      i = 0;
-   }
+   i = g_iMagicTopRow * iItemsPerLine;
 
    for (j = 0; j < iLinesPerPage; j++)
    {
@@ -233,9 +263,6 @@ PAL_MagicSelectionMenuUpdate(
 
          if (i >= g_iNumMagic)
          {
-            //
-            // End of the list reached
-            //
             j = iLinesPerPage;
             break;
          }
@@ -256,14 +283,8 @@ PAL_MagicSelectionMenuUpdate(
             bColor = MENUITEM_COLOR_INACTIVE;
          }
 
-         //
-         // Draw the text
-         //
          PAL_DrawText(PAL_GetWord(rgMagicItem[i].wMagic), PAL_XY(35 + k * iItemTextWidth, 54 + j * 18 + iBoxYOffset), bColor, TRUE, FALSE, FALSE);
 
-         //
-         // Draw the cursor on the current selected item
-         //
          if (i == g_iCurrentItem)
          {
             PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR),
@@ -274,23 +295,18 @@ PAL_MagicSelectionMenuUpdate(
       }
    }
 
-   if (g_InputState.dwKeyPress & kKeySearch)
+   if ((g_InputState.dwKeyPress & kKeySearch) || fTouchConfirm)
    {
       if (rgMagicItem[g_iCurrentItem].fEnabled)
       {
-         j = g_iCurrentItem % iItemsPerLine;
-         k = (g_iCurrentItem < iItemsPerLine * iPageLineOffset) ? (g_iCurrentItem / iItemsPerLine) : iPageLineOffset;
-
-         j = 35 + j * iItemTextWidth;
-         k = 54 + k * 18 + iBoxYOffset;
-
-         PAL_DrawText(PAL_GetWord(rgMagicItem[g_iCurrentItem].wMagic), PAL_XY(j, k), MENUITEM_COLOR_CONFIRMED, FALSE, TRUE, FALSE);
-
-         //
-         // Draw the cursor on the current selected item
-         //
-         PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR), gpScreen, PAL_XY(j + iCursorXOffset, k + 10));
-
+         int visRow = (g_iCurrentItem / iItemsPerLine) - g_iMagicTopRow;
+         if (visRow >= 0 && visRow < iLinesPerPage)
+         {
+            j = 35 + (g_iCurrentItem % iItemsPerLine) * iItemTextWidth;
+            k = 54 + visRow * 18 + iBoxYOffset;
+            PAL_DrawText(PAL_GetWord(rgMagicItem[g_iCurrentItem].wMagic), PAL_XY(j, k), MENUITEM_COLOR_CONFIRMED, FALSE, TRUE, FALSE);
+            PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR), gpScreen, PAL_XY(j + iCursorXOffset, k + 10));
+         }
          return rgMagicItem[g_iCurrentItem].wMagic;
       }
    }
@@ -304,36 +320,17 @@ PAL_MagicSelectionMenuInit(
    BOOL         fInBattle,
    WORD         wDefaultMagic
 )
-/*++
-  Purpose:
-
-    Initialize the magic selection menu.
-
-  Parameters:
-
-    [IN]  wPlayerRole - the player ID.
-
-    [IN]  fInBattle - TRUE if in battle, FALSE if not.
-
-    [IN]  wDefaultMagic - the default magic item.
-
-  Return value:
-
-    None.
-
---*/
 {
    WORD       w;
    int        i, j;
+   const int  iItemsPerLine = 32 / gConfig.dwWordLength;
+   const int  iLinesPerPage = 5 - gConfig.ScreenLayout.ExtraMagicDescLines;
 
    g_iCurrentItem = 0;
    g_iNumMagic = 0;
 
    g_wPlayerMP = gpGlobals->g.PlayerRoles.rgwMP[wPlayerRole];
 
-   //
-   // Put all magics of this player to the array
-   //
    for (i = 0; i < MAX_PLAYER_MAGICS; i++)
    {
       w = gpGlobals->g.PlayerRoles.rgwMagic[i][wPlayerRole];
@@ -371,9 +368,6 @@ PAL_MagicSelectionMenuInit(
       }
    }
 
-   //
-   // Sort the array
-   //
    for (i = 0; i < g_iNumMagic - 1; i++)
    {
       BOOL fCompleted = TRUE;
@@ -396,9 +390,6 @@ PAL_MagicSelectionMenuInit(
       }
    }
 
-   //
-   // Place the cursor to the default item
-   //
    for (i = 0; i < g_iNumMagic; i++)
    {
       if (rgMagicItem[i].wMagic == wDefaultMagic)
@@ -407,6 +398,16 @@ PAL_MagicSelectionMenuInit(
          break;
       }
    }
+
+   {
+      int totalRows = (g_iNumMagic + iItemsPerLine - 1) / iItemsPerLine;
+      int maxTop = (totalRows > iLinesPerPage) ? (totalRows - iLinesPerPage) : 0;
+      g_iMagicTopRow = (g_iCurrentItem / iItemsPerLine) - (iLinesPerPage / 2);
+      if (g_iMagicTopRow < 0) g_iMagicTopRow = 0;
+      if (g_iMagicTopRow > maxTop) g_iMagicTopRow = maxTop;
+   }
+
+   PAL_TouchClearGestures();
 }
 
 WORD
@@ -415,29 +416,13 @@ PAL_MagicSelectionMenu(
    BOOL         fInBattle,
    WORD         wDefaultMagic
 )
-/*++
-  Purpose:
-
-    Show the magic selection menu.
-
-  Parameters:
-
-    [IN]  wPlayerRole - the player ID.
-
-    [IN]  fInBattle - TRUE if in battle, FALSE if not.
-
-    [IN]  wDefaultMagic - the default magic item.
-
-  Return value:
-
-    The selected magic. 0 if cancelled.
-
---*/
 {
    WORD            w;
    int             i;
    DWORD           dwTime;
+   PALTOUCHMODE    prevTouchMode = PAL_TouchGetMode();
 
+   PAL_TouchSetMode(kTouchModeMenu);
    PAL_MagicSelectionMenuInit(wPlayerRole, fInBattle, wDefaultMagic);
    PAL_ClearKeyState();
 
@@ -463,6 +448,7 @@ PAL_MagicSelectionMenu(
 
       if (w != 0xFFFF)
       {
+         PAL_TouchSetMode(prevTouchMode);
          return w;
       }
 
@@ -470,15 +456,16 @@ PAL_MagicSelectionMenu(
       while (!SDL_TICKS_PASSED(SDL_GetTicks(), dwTime))
       {
          PAL_ProcessEvent();
-         if (g_InputState.dwKeyPress != 0)
+         if (g_InputState.dwKeyPress != 0 || PAL_TouchHasPendingInput())
          {
             break;
          }
          SDL_Delay(5);
       }
 
-      dwTime = SDL_GetTicks() + FRAME_TIME;
+      dwTime = SDL_GetTicks() + (1000 / FPS);
    }
 
-   return 0; // should not really reach here
+   PAL_TouchSetMode(prevTouchMode);
+   return 0;
 }

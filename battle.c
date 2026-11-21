@@ -766,9 +766,16 @@ PAL_BattleMain(
       PAL_DelayUntil(dwTime);
 
       //
-      // Set the time of the next frame.
+      // Set the time of the next frame (keep normal calm pace while player is picking a command).
       //
-      dwTime = SDL_GetTicks() + BATTLE_FRAME_TIME;
+      if (g_Battle.UI.state != kBattleUIWait && !g_Battle.UI.fAutoAttack && !gpGlobals->fAutoBattle)
+      {
+         dwTime = SDL_GetTicks() + (1000 / BATTLE_FPS);
+      }
+      else
+      {
+         dwTime = SDL_GetTicks() + BATTLE_FRAME_TIME;
+      }
 
       //
       // Run the main frame routine.

@@ -37,6 +37,7 @@
 #include "video.h"
 #include "video_gpu.h"
 #include "input.h"
+#include "touch_ui.h"
 #include "text.h"
 #include "ui.h"
 #include "uigame.h"

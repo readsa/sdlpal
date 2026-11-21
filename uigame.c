@@ -22,6 +22,7 @@
 #include "main.h"
 
 static BOOL __buymenu_firsttime_render;
+static BOOL g_fSaveSlotIsSaving = FALSE;
 
 static WORD GetSavedTimes(int iSaveSlot)
 {
@@ -36,6 +37,51 @@ static WORD GetSavedTimes(int iSaveSlot)
 		fclose(fp);
 	}
 	return wSavedTimes;
+}
+
+static VOID PAL_ScanSaveSlots(int *pMaxSlot, WORD *pMaxSavedTimes)
+{
+	int maxSlot = 0;
+	WORD maxTimes = 0;
+	if (gConfig.pszSavePath != NULL)
+	{
+		DIR *dir = opendir(gConfig.pszSavePath);
+		if (dir != NULL)
+		{
+			struct dirent *ent;
+			while ((ent = readdir(dir)) != NULL)
+			{
+				const char *name = ent->d_name;
+				int slot = 0;
+				int pos = 0;
+				while (name[pos] >= '0' && name[pos] <= '9')
+				{
+					slot = slot * 10 + (name[pos] - '0');
+					if (slot > 99999) break;
+					pos++;
+				}
+				if (pos > 0 && slot >= 1 && slot <= 60000 &&
+				    SDL_strcasecmp(name + pos, ".rpg") == 0)
+				{
+					if (slot > maxSlot)
+					{
+						maxSlot = slot;
+					}
+					if (pMaxSavedTimes != NULL)
+					{
+						WORD t = GetSavedTimes(slot);
+						if (t > maxTimes)
+						{
+							maxTimes = t;
+						}
+					}
+				}
+			}
+			closedir(dir);
+		}
+	}
+	if (pMaxSlot != NULL) *pMaxSlot = maxSlot;
+	if (pMaxSavedTimes != NULL) *pMaxSavedTimes = maxTimes;
 }
 
 VOID
@@ -98,7 +144,7 @@ PAL_OpeningMenu(
 
 --*/
 {
-   WORD          wItemSelected;
+   INT           iItemSelected;
    WORD          wDefaultItem     = 0;
    INT           w[2] = { PAL_WordWidth(MAINMENU_LABEL_NEWGAME), PAL_WordWidth(MAINMENU_LABEL_LOADGAME) };
 
@@ -107,6 +153,8 @@ PAL_OpeningMenu(
       {  0,      MAINMENU_LABEL_NEWGAME,   TRUE,     PAL_XY(125 - (w[0] > 4 ? (w[0] - 4) * 8 : 0), 95)  },
       {  1,      MAINMENU_LABEL_LOADGAME,  TRUE,     PAL_XY(125 - (w[1] > 4 ? (w[1] - 4) * 8 : 0), 112) }
    };
+
+   PAL_TouchSetMode(kTouchModeTitleMenu);
 
    //
    // Play the background music
@@ -124,14 +172,14 @@ PAL_OpeningMenu(
       //
       // Activate the menu
       //
-      wItemSelected = PAL_ReadMenu(NULL, rgMainMenuItem, 2, wDefaultItem, MENUITEM_COLOR);
+      iItemSelected = (INT)PAL_ReadMenu(NULL, rgMainMenuItem, 2, wDefaultItem, MENUITEM_COLOR);
 
-      if (wItemSelected == 0 || wItemSelected == MENUITEM_VALUE_CANCELLED)
+      if (iItemSelected == 0 || iItemSelected == MENUITEM_VALUE_CANCELLED)
       {
          //
          // Start a new game
          //
-         wItemSelected = 0;
+         iItemSelected = 0;
          break;
       }
       else
@@ -139,11 +187,12 @@ PAL_OpeningMenu(
          //
          // Load game
          //
+         g_fSaveSlotIsSaving = FALSE;
          VIDEO_BackupScreen(gpScreen);
-         wItemSelected = PAL_SaveSlotMenu(1);
+         iItemSelected = PAL_SaveSlotMenu(1);
          VIDEO_RestoreScreen(gpScreen);
          VIDEO_UpdateScreen(NULL);
-         if (wItemSelected != MENUITEM_VALUE_CANCELLED)
+         if (iItemSelected != MENUITEM_VALUE_CANCELLED)
          {
             break;
          }
@@ -157,84 +206,295 @@ PAL_OpeningMenu(
    AUDIO_PlayMusic(0, FALSE, 1);
    PAL_FadeOut(1);
 
-   if (wItemSelected == 0)
+   if (iItemSelected == 0)
    {
       PAL_PlayAVI("3.avi");
    }
 
-   return (INT)wItemSelected;
+   return iItemSelected;
 }
 
 INT
 PAL_SaveSlotMenu(
-   WORD        wDefaultSlot
+   INT         wDefaultSlot
 )
 /*++
   Purpose:
 
-    Show the load game menu.
+    Show the unlimited scrollable save/load slot menu (1 .. infinity).
 
   Parameters:
 
-    [IN]  wDefaultSlot - default save slot number (1-5).
+    [IN]  wDefaultSlot - default save slot number (1..N).
 
   Return value:
 
-    Which saved slot to load from (1-5). MENUITEM_VALUE_CANCELLED if cancelled.
+    Selected save slot (1..N), or MENUITEM_VALUE_CANCELLED if cancelled.
 
 --*/
 {
-   LPBOX           rgpBox[5];
-   int             i, w = PAL_WordMaxWidth(LOADMENU_LABEL_SLOT_FIRST, 5);
-   int             dx = (w > 4) ? (w - 4) * 16 : 0;
-   WORD            wItemSelected;
+   PALTOUCHMODE    prevTouchMode = PAL_TouchGetMode();
+   SDL_Surface    *pSavedBg = VIDEO_DuplicateSurface(gpScreen, NULL);
+   const SDL_Rect  panelRect = { 164, 2, 156, 198 };
+   BOOL            fIsSaving = g_fSaveSlotIsSaving;
+   int             maxExistingSlot = 0;
+   int             nVisibleRows = fIsSaving ? 6 : 7;
+   int             boxY = fIsSaving ? 40 : 8;
+   int             nBoxRows = fIsSaving ? 6 : 8;
+   int             boxH = 42 + nBoxRows * 18;
+   int             firstRowY = fIsSaving ? 51 : 20;
+   int             rowStep = fIsSaving ? 22 : 23;
+   int             nTotalSlots;
+   int             iCurSlot;
+   int             iTopSlot;
+   INT             iResult = MENUITEM_VALUE_CANCELLED;
 
-   MENUITEM        rgMenuItem[5];
+   LPCWSTR         wSlotWord = PAL_GetWord(LOADMENU_LABEL_SLOT_FIRST);
+   LPCWSTR         wNewGameWord = PAL_GetWord(MAINMENU_LABEL_NEWGAME);
+   WCHAR           chSlot0 = (wSlotWord && wSlotWord[0]) ? wSlotWord[0] : L'#';
+   WCHAR           chSlot1 = (wSlotWord && wSlotWord[0] && wSlotWord[1]) ? wSlotWord[1] : L' ';
+   WCHAR           chNew = (wNewGameWord && wNewGameWord[0]) ? wNewGameWord[0] : L'+';
 
-   const SDL_Rect  rect = { 195 - dx, 7, 120 + dx, 190 };
+   PAL_ScanSaveSlots(&maxExistingSlot, NULL);
 
-   //
-   // Create the boxes and create the menu items
-   //
-   for (i = 0; i < 5; i++)
+   if (wDefaultSlot < 1)
    {
-      // Fix render problem with shadow
-      rgpBox[i] = PAL_CreateSingleLineBox(PAL_XY(195 - dx, 7 + 38 * i), 6 + (w > 4 ? w - 4 : 0), FALSE);
+      wDefaultSlot = 1;
+   }
+   iCurSlot = wDefaultSlot;
 
-      rgMenuItem[i].wValue = i + 1;
-      rgMenuItem[i].fEnabled = TRUE;
-      rgMenuItem[i].wNumWord = LOADMENU_LABEL_SLOT_FIRST + i;
-	  rgMenuItem[i].pos = PAL_XY(210 - dx, 17 + 38 * i);
+   nTotalSlots = (maxExistingSlot + 15 > 20) ? (maxExistingSlot + 15) : 20;
+   if (iCurSlot + 15 > nTotalSlots)
+   {
+      nTotalSlots = iCurSlot + 15;
    }
 
-   //
-   // Draw the numbers of saved times
-   //
-   for (i = 1; i <= 5; i++)
+   iTopSlot = iCurSlot - nVisibleRows / 2;
+   if (iTopSlot < 1)
    {
-      //
-      // Draw the number
-      //
-      PAL_DrawNumber((UINT)GetSavedTimes(i), 4, PAL_XY(270, 38 * i - 17),
-         kNumColorYellow, kNumAlignRight);
+      iTopSlot = 1;
    }
 
-   //
-   // Activate the menu
-   //
-   wItemSelected = PAL_ReadMenu(NULL, rgMenuItem, 5, wDefaultSlot - 1, MENUITEM_COLOR);
+   PAL_TouchSetMode(kTouchModeMenu);
+   PAL_TouchClearGestures();
+   PAL_ClearKeyState();
 
-   //
-   // Delete the boxes
-   //
-   for (i = 0; i < 5; i++)
+   while (TRUE)
    {
-      PAL_DeleteBox(rgpBox[i]);
+      int i;
+
+      // Auto-expand unlimited slot list whenever scrolling near the bottom
+      if (iTopSlot + nVisibleRows >= nTotalSlots - 3)
+      {
+         nTotalSlots = iTopSlot + nVisibleRows + 20;
+      }
+
+      // Restore clean background before redrawing panel
+      if (pSavedBg != NULL)
+      {
+         VIDEO_CopySurface(pSavedBg, NULL, gpScreen, NULL);
+      }
+
+      // 1. In Save Mode, draw 1-tap [+新进度 #N] quick button at the top
+      if (fIsSaving)
+      {
+         WCHAR szNewBtn[32];
+         int iNextFreshSlot = maxExistingSlot + 1;
+         PAL_CreateSingleLineBoxWithShadow(PAL_XY(168, 5), 6, FALSE, 4);
+         PAL_swprintf(szNewBtn, 32, L"+%lc%lc%lc %d", chNew, chSlot0, chSlot1, iNextFreshSlot);
+         PAL_DrawText(szNewBtn, PAL_XY(180, 14), MENUITEM_COLOR_CONFIRMED, TRUE, FALSE, FALSE);
+      }
+
+      // 2. Draw main scrollable save-slot window
+      PAL_CreateBoxWithShadow(PAL_XY(168, boxY), nBoxRows, 6, 0, FALSE, 4);
+
+      for (i = 0; i < nVisibleRows; i++)
+      {
+         int slot = iTopSlot + i;
+         int y = firstRowY + i * rowStep;
+         WORD wTimes = GetSavedTimes(slot);
+         WCHAR szLabel[32];
+         BYTE bColor;
+
+         if (slot == iCurSlot)
+         {
+            bColor = (!fIsSaving && wTimes == 0) ? MENUITEM_COLOR_SELECTED_INACTIVE : MENUITEM_COLOR_SELECTED;
+         }
+         else
+         {
+            bColor = (!fIsSaving && wTimes == 0) ? MENUITEM_COLOR_INACTIVE : MENUITEM_COLOR;
+         }
+
+         PAL_swprintf(szLabel, 32, L"%lc%lc %d", chSlot0, chSlot1, slot);
+         PAL_DrawText(szLabel, PAL_XY(180, y), bColor, TRUE, FALSE, FALSE);
+
+         if (wTimes > 0)
+         {
+            PAL_DrawNumber((UINT)wTimes, 4, PAL_XY(268, y + 4), kNumColorYellow, kNumAlignRight);
+         }
+         else
+         {
+            PAL_DrawText(L"---", PAL_XY(268, y), MENUITEM_COLOR_INACTIVE, TRUE, FALSE, FALSE);
+         }
+      }
+
+      // 3. Draw up/down scroll indicators on right inner edge
+      if (iTopSlot > 1)
+      {
+         LPCBITMAPRLE lpUp = PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR_YELLOW_UP);
+         if (lpUp != NULL)
+         {
+            PAL_RLEBlitToSurface(lpUp, gpScreen, PAL_XY(294, boxY + 10));
+         }
+      }
+      {
+         LPCBITMAPRLE lpDn = PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR_YELLOW);
+         if (lpDn != NULL)
+         {
+            PAL_RLEBlitToSurface(lpDn, gpScreen, PAL_XY(294, boxY + boxH - 20));
+         }
+      }
+
+      VIDEO_UpdateScreen(&panelRect);
+
+      // 4. Handle vertical finger-drag scrolling (unlimited!)
+      {
+         int scrollDelta = PAL_TouchPollScrollRows(20);
+         if (scrollDelta != 0)
+         {
+            iTopSlot += scrollDelta;
+            if (iTopSlot < 1)
+            {
+               iTopSlot = 1;
+            }
+            if (iCurSlot < iTopSlot)
+            {
+               iCurSlot = iTopSlot;
+            }
+            else if (iCurSlot >= iTopSlot + nVisibleRows)
+            {
+               iCurSlot = iTopSlot + nVisibleRows - 1;
+            }
+         }
+      }
+
+      // 5. Handle direct touch taps
+      {
+         INT tapX = 0, tapY = 0;
+         if (PAL_TouchPollTap(&tapX, &tapY))
+         {
+            // Tap outside the right panel cancels/returns
+            if (tapX < 162)
+            {
+               iResult = MENUITEM_VALUE_CANCELLED;
+               break;
+            }
+            // In Save Mode, 1-tap on [+新进度 #N] saves to brand-new slot immediately!
+            if (fIsSaving && tapX >= 164 && tapX <= 314 && tapY >= 2 && tapY <= 38)
+            {
+               iResult = maxExistingSlot + 1;
+               break;
+            }
+            // Tap on right-edge up/down arrow zones pages up/down
+            if (tapX >= 288 && tapX <= 316 && tapY >= boxY && tapY <= boxY + 28)
+            {
+               iTopSlot -= (nVisibleRows - 1);
+               if (iTopSlot < 1) iTopSlot = 1;
+               iCurSlot = iTopSlot;
+            }
+            else if (tapX >= 288 && tapX <= 316 && tapY >= boxY + boxH - 28 && tapY <= boxY + boxH + 4)
+            {
+               iTopSlot += (nVisibleRows - 1);
+               iCurSlot = iTopSlot;
+            }
+            else if (tapX >= 164 && tapX <= 314 &&
+                     tapY >= firstRowY - 5 && tapY < firstRowY + nVisibleRows * rowStep)
+            {
+               int hitRow = (tapY - (firstRowY - 5)) / rowStep;
+               if (hitRow >= 0 && hitRow < nVisibleRows)
+               {
+                  int hitSlot = iTopSlot + hitRow;
+                  iCurSlot = hitSlot;
+                  if (fIsSaving || GetSavedTimes(hitSlot) > 0)
+                  {
+                     iResult = hitSlot;
+                     break;
+                  }
+               }
+            }
+         }
+      }
+
+      // 6. Handle HUD [返回] & keyboard/controller keys
+      if (g_InputState.dwKeyPress & kKeyMenu)
+      {
+         iResult = MENUITEM_VALUE_CANCELLED;
+         break;
+      }
+      else if (g_InputState.dwKeyPress & kKeySearch)
+      {
+         if (fIsSaving || GetSavedTimes(iCurSlot) > 0)
+         {
+            iResult = iCurSlot;
+            break;
+         }
+      }
+      else if (g_InputState.dwKeyPress & (kKeyUp | kKeyLeft))
+      {
+         if (iCurSlot > 1)
+         {
+            iCurSlot--;
+            if (iCurSlot < iTopSlot)
+            {
+               iTopSlot = iCurSlot;
+            }
+         }
+      }
+      else if (g_InputState.dwKeyPress & (kKeyDown | kKeyRight))
+      {
+         iCurSlot++;
+         if (iCurSlot >= iTopSlot + nVisibleRows)
+         {
+            iTopSlot = iCurSlot - nVisibleRows + 1;
+         }
+      }
+      else if (g_InputState.dwKeyPress & kKeyPgUp)
+      {
+         iCurSlot -= nVisibleRows;
+         if (iCurSlot < 1) iCurSlot = 1;
+         iTopSlot -= nVisibleRows;
+         if (iTopSlot < 1) iTopSlot = 1;
+      }
+      else if (g_InputState.dwKeyPress & kKeyPgDn)
+      {
+         iCurSlot += nVisibleRows;
+         iTopSlot += nVisibleRows;
+      }
+
+      // Clear key state BEFORE sleeping so events arriving during sleep are preserved!
+      PAL_ClearKeyState();
+      for (i = 0; i < 4; i++)
+      {
+         SDL_Delay(10);
+         PAL_ProcessEvent();
+         if (g_InputState.dwKeyPress != 0 || PAL_TouchHasPendingInput())
+         {
+            break;
+         }
+      }
    }
 
-   VIDEO_UpdateScreen(&rect);
+   if (pSavedBg != NULL)
+   {
+      VIDEO_CopySurface(pSavedBg, NULL, gpScreen, NULL);
+      VIDEO_FreeSurface(pSavedBg);
+   }
+   VIDEO_UpdateScreen(&panelRect);
 
-   return wItemSelected;
+   PAL_ClearKeyState();
+   PAL_TouchClearGestures();
+   PAL_TouchSetMode(prevTouchMode);
+   return iResult;
 }
 
 static
@@ -534,7 +794,7 @@ PAL_SystemMenu(
    LPBOX               lpMenuBox;
    WORD                wReturnValue;
    int                 iSlot, i;
-   const SDL_Rect      rect = {40, 60, 280, 135};
+   const SDL_Rect      rect = {40, 54, 280, 146};
 
    //
    // Create menu items
@@ -542,13 +802,14 @@ PAL_SystemMenu(
    const MENUITEM      rgSystemMenuItem[] =
    {
       // value  label                        enabled   pos
-      { 1,      SYSMENU_LABEL_SAVE,          TRUE,     PAL_XY(53, 72) },
-      { 2,      SYSMENU_LABEL_LOAD,          TRUE,     PAL_XY(53, 72 + 18) },
-      { 3,      SYSMENU_LABEL_MUSIC,         TRUE,     PAL_XY(53, 72 + 36) },
-      { 4,      SYSMENU_LABEL_SOUND,         TRUE,     PAL_XY(53, 72 + 54) },
-      { 5,      SYSMENU_LABEL_QUIT,          TRUE,     PAL_XY(53, 72 + 72) },
+      { 1,      SYSMENU_LABEL_SAVE,          TRUE,     PAL_XY(53, 66) },
+      { 2,      SYSMENU_LABEL_LOAD,          TRUE,     PAL_XY(53, 66 + 18) },
+      { 3,      SYSMENU_LABEL_MUSIC,         TRUE,     PAL_XY(53, 66 + 36) },
+      { 4,      SYSMENU_LABEL_SOUND,         TRUE,     PAL_XY(53, 66 + 54) },
+      { 7,      SYSMENU_LABEL_LAUNCHSETTING, TRUE,     PAL_XY(53, 66 + 72) },
+      { 5,      SYSMENU_LABEL_QUIT,          TRUE,     PAL_XY(53, 66 + 90) },
 #if !defined(PAL_CLASSIC)
-      { 6,      SYSMENU_LABEL_BATTLEMODE,    TRUE,     PAL_XY(53, 72 + 90) },
+      { 6,      SYSMENU_LABEL_BATTLEMODE,    TRUE,     PAL_XY(53, 66 + 108) },
 #endif
    };
    const int           nSystemMenuItem = sizeof(rgSystemMenuItem) / sizeof(MENUITEM);
@@ -556,7 +817,7 @@ PAL_SystemMenu(
    //
    // Create the menu box.
    //
-   lpMenuBox = PAL_CreateBox(PAL_XY(40, 60), nSystemMenuItem - 1, PAL_MenuTextMaxWidth(rgSystemMenuItem, nSystemMenuItem) - 1, 0, TRUE);
+   lpMenuBox = PAL_CreateBox(PAL_XY(40, 54), nSystemMenuItem - 1, PAL_MenuTextMaxWidth(rgSystemMenuItem, nSystemMenuItem) - 1, 0, TRUE);
 
    //
    // Perform the menu.
@@ -577,33 +838,28 @@ PAL_SystemMenu(
    {
    case 1:
       //
-      // Save game
+      // Save game (unlimited slots)
       //
+      g_fSaveSlotIsSaving = TRUE;
       iSlot = PAL_SaveSlotMenu(gpGlobals->bCurrentSaveSlot);
+      g_fSaveSlotIsSaving = FALSE;
 
-      if (iSlot != MENUITEM_VALUE_CANCELLED)
+      if (iSlot != MENUITEM_VALUE_CANCELLED && iSlot >= 1)
       {
          WORD wSavedTimes = 0;
-         gpGlobals->bCurrentSaveSlot = (BYTE)iSlot;
-
-         for (i = 1; i <= 5; i++)
-         {
-            WORD curSavedTimes = GetSavedTimes(i);
-            if (curSavedTimes > wSavedTimes)
-            {
-               wSavedTimes = curSavedTimes;
-            }
-         }
+         gpGlobals->bCurrentSaveSlot = iSlot;
+         PAL_ScanSaveSlots(NULL, &wSavedTimes);
          PAL_SaveGame(iSlot, wSavedTimes + 1);
       }
       break;
 
    case 2:
       //
-      // Load game
+      // Load game (unlimited slots)
       //
+      g_fSaveSlotIsSaving = FALSE;
       iSlot = PAL_SaveSlotMenu(gpGlobals->bCurrentSaveSlot);
-      if (iSlot != MENUITEM_VALUE_CANCELLED)
+      if (iSlot != MENUITEM_VALUE_CANCELLED && iSlot >= 1)
       {
          AUDIO_PlayMusic(0, FALSE, 1);
          PAL_FadeOut(1);
@@ -634,6 +890,32 @@ PAL_SystemMenu(
       // Quit
       //
       PAL_QuitGame();
+      break;
+
+   case 7:
+      //
+      // Live System Configuration Page (Performance HUD, MIDI/RIX synth, Display, etc.)
+      //
+#if defined(__IOS__)
+      {
+         INT restartReq = UTIL_ShowSystemSettingsModal(TRUE, (int)gpGlobals->wNumMusic);
+         if (restartReq == 1)
+         {
+            PAL_DeleteBox(lpMenuBox);
+            PAL_SaveConfig();
+            AUDIO_PlayMusic(0, FALSE, 1);
+            PAL_FadeOut(1);
+            PAL_Shutdown(0);
+            return TRUE;
+         }
+      }
+#else
+      gConfig.fLaunchSetting = TRUE;
+      PAL_SaveConfig();
+      AUDIO_PlayMusic(0, FALSE, 2);
+      PAL_FadeOut(2);
+      PAL_Shutdown(0);
+#endif
       break;
 
 #if !defined(PAL_CLASSIC)
@@ -763,26 +1045,20 @@ start_magicmenu:
          //
          // Need to select which player to use the magic on.
          //
-         WORD       wPlayer = 0;
-         SDL_Rect   rect;
+         WORD         wPlayer = 0;
+         INT          iPrimedPlayer = (gpGlobals->wMaxPartyMemberIndex == 0) ? 0 : -1;
+         SDL_Rect     rect;
+         PALTOUCHMODE prevTargetMode = PAL_TouchGetMode();
+
+         PAL_TouchSetMode(kTouchModeMenu);
+         PAL_TouchClearGestures();
+         PAL_ClearKeyState();
 
          while (wPlayer != MENUITEM_VALUE_CANCELLED)
          {
-            //
-            // Redraw the player info boxes first
-            //
-            y = 45;
+            BOOL fLocked = (iPrimedPlayer == (INT)wPlayer);
+            WORD wTargetRole = gpGlobals->rgParty[wPlayer].wPlayerRole;
 
-            for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
-            {
-               PAL_PlayerInfoBox(PAL_XY(y, 165), gpGlobals->rgParty[i].wPlayerRole, 100,
-                  TIMEMETER_COLOR_DEFAULT, TRUE);
-               y += 78;
-            }
-
-            //
-            // Draw the cursor on the selected item
-            //
             rect.x = 0;
             rect.y = 158;
             rect.w = 320;
@@ -790,15 +1066,80 @@ start_magicmenu:
 
             VIDEO_RestoreScreen(gpScreen);
 
-            PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR_UP),
+            // Redraw updated player HP/MP boxes after restoring background
+            y = 45;
+            for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
+            {
+               PAL_PlayerInfoBox(PAL_XY(y, 165), gpGlobals->rgParty[i].wPlayerRole, 100,
+                  TIMEMETER_COLOR_DEFAULT, FALSE);
+               y += 78;
+            }
+
+            // Draw Target Confirmation Box above party cards
+            PAL_CreateSingleLineBox(PAL_XY(96, 120), 7, FALSE);
+            PAL_DrawText(PAL_GetWord(gpGlobals->g.PlayerRoles.rgwName[wTargetRole]),
+               PAL_XY(110, 129), fLocked ? MENUITEM_COLOR_SELECTED : MENUITEM_COLOR, TRUE, FALSE, FALSE);
+            if (fLocked)
+            {
+               LPCBITMAPRLE lpConfCur = PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR_YELLOW);
+               if (lpConfCur != NULL)
+               {
+                  PAL_RLEBlitToSurface(lpConfCur, gpScreen, PAL_XY(214, 134));
+               }
+            }
+
+            PAL_RLEBlitToSurface(
+               PAL_SpriteGetFrame(gpSpriteUI, fLocked ? SPRITENUM_CURSOR_YELLOW_UP : SPRITENUM_CURSOR_UP),
                gpScreen, PAL_XY(75 + 78 * wPlayer, rect.y));
 
-            VIDEO_UpdateScreen(&rect);
+            VIDEO_UpdateScreen(NULL);
 
             while (TRUE)
             {
-               PAL_ClearKeyState();
+               INT tapX = 0, tapY = 0;
+               BOOL fOnlySwitchedTarget = FALSE;
                PAL_ProcessEvent();
+
+               if (PAL_TouchPollTap(&tapX, &tapY))
+               {
+                  if (fLocked && tapX >= 94 && tapX <= 242 && tapY >= 118 && tapY <= 152)
+                  {
+                     g_InputState.dwKeyPress |= kKeySearch;
+                  }
+                  else if (tapY >= 152 && tapY <= 200)
+                  {
+                     for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
+                     {
+                        int px = 45 + 78 * i;
+                        if (tapX >= px - 2 && tapX <= px + 76)
+                        {
+                           if ((INT)i == (INT)wPlayer && iPrimedPlayer == (INT)i)
+                           {
+                              // 2nd tap on already-highlighted teammate -> Confirm magic!
+                              g_InputState.dwKeyPress |= kKeySearch;
+                           }
+                           else
+                           {
+                              // 1st tap -> Highlight & lock onto teammate!
+                              wPlayer = (WORD)i;
+                              iPrimedPlayer = (INT)i;
+                              fOnlySwitchedTarget = TRUE;
+                           }
+                           break;
+                        }
+                     }
+                  }
+                  else if (tapY < 114)
+                  {
+                     g_InputState.dwKeyPress |= kKeyMenu;
+                  }
+               }
+
+               if (fOnlySwitchedTarget)
+               {
+                  PAL_ClearKeyState();
+                  break;
+               }
 
                if (g_InputState.dwKeyPress & kKeyMenu)
                {
@@ -855,9 +1196,12 @@ start_magicmenu:
                   }
                }
 
-               SDL_Delay(1);
+               PAL_ClearKeyState();
+               SDL_Delay(5);
             }
          }
+
+         PAL_TouchSetMode(prevTargetMode);
       }
 
       //
@@ -1048,6 +1392,20 @@ out:
 }
 
 VOID
+PAL_InGameSystemMenu(
+   VOID
+)
+{
+   LPBOX lpCashBox;
+
+   VIDEO_BackupScreen(gpScreen);
+   lpCashBox = PAL_ShowCash(gpGlobals->dwCash);
+   PAL_SystemMenu();
+   PAL_DeleteBox(lpCashBox);
+   VIDEO_RestoreScreen(gpScreen);
+}
+
+VOID
 PAL_PlayerStatus(
    VOID
 )
@@ -1085,7 +1443,10 @@ PAL_PlayerStatus(
    int              iPlayerRole;
    int              i, j;
    WORD             w;
+   PALTOUCHMODE     prevTouchMode = PAL_TouchGetMode();
 
+   PAL_TouchSetMode(kTouchModeMenu);
+   PAL_TouchClearGestures();
    PAL_MKFDecompressChunk(bufBackground, 320 * 200, STATUS_BACKGROUND_FBPNUM, gpGlobals->f.fpFBP);
    iCurrent = 0;
 
@@ -1264,7 +1625,60 @@ PAL_PlayerStatus(
 
       while (TRUE)
       {
-         UTIL_Delay(1);
+         INT tapX = 0, tapY = 0;
+         INT swipe = 0;
+         UTIL_Delay(5);
+
+         swipe = PAL_TouchPollHorizSwipe();
+         if (swipe < 0 && gpGlobals->wMaxPartyMemberIndex > 0)
+         {
+            iCurrent = (iCurrent + 1) % (gpGlobals->wMaxPartyMemberIndex + 1);
+            break;
+         }
+         else if (swipe > 0 && gpGlobals->wMaxPartyMemberIndex > 0)
+         {
+            iCurrent = (iCurrent > 0) ? (iCurrent - 1) : gpGlobals->wMaxPartyMemberIndex;
+            break;
+         }
+
+         if (PAL_TouchPollTap(&tapX, &tapY))
+         {
+            BOOL fHitEquipSlot = FALSE;
+            if (!gpGlobals->fInBattle)
+            {
+               for (i = 0; i < MAX_PLAYER_EQUIPMENTS; i++)
+               {
+                  int bx = PAL_X(gConfig.ScreenLayout.RoleEquipImageBoxes[i]);
+                  int by = PAL_Y(gConfig.ScreenLayout.RoleEquipImageBoxes[i]);
+                  if (tapX >= bx - 2 && tapX <= bx + 52 && tapY >= by - 2 && tapY <= by + 52)
+                  {
+                     fHitEquipSlot = TRUE;
+                     break;
+                  }
+               }
+            }
+            if (fHitEquipSlot)
+            {
+               // Direct tap on an equipment slot opens Armory/Equipment screen immediately!
+               PAL_GameEquipItem();
+               PAL_TouchSetMode(kTouchModeMenu);
+               PAL_TouchClearGestures();
+               break;
+            }
+            else if (gpGlobals->wMaxPartyMemberIndex > 0)
+            {
+               if (tapX < 95)
+               {
+                  iCurrent = (iCurrent > 0) ? (iCurrent - 1) : gpGlobals->wMaxPartyMemberIndex;
+                  break;
+               }
+               else if (tapX <= 185)
+               {
+                  iCurrent = (iCurrent + 1) % (gpGlobals->wMaxPartyMemberIndex + 1);
+                  break;
+               }
+            }
+         }
 
          if (g_InputState.dwKeyPress & kKeyMenu)
          {
@@ -1283,6 +1697,8 @@ PAL_PlayerStatus(
          }
       }
    }
+
+   PAL_TouchSetMode(prevTouchMode);
 }
 
 WORD
@@ -1309,9 +1725,13 @@ PAL_ItemUseMenu(
    PAL_LARGE BYTE bufImage[2048];
    DWORD          dwColorChangeTime;
    static SHORT   sSelectedPlayer = 0;
+   BOOL           fRolePrimed = (gpGlobals->wMaxPartyMemberIndex == 0);
    SDL_Rect       rect = {110, 2, 200, 180};
    int            i;
+   PALTOUCHMODE   prevTouchMode = PAL_TouchGetMode();
 
+   PAL_TouchSetMode(kTouchModeMenu);
+   PAL_TouchClearGestures();
    bSelectedColor = MENUITEM_COLOR_SELECTED_FIRST;
    dwColorChangeTime = 0;
 
@@ -1393,10 +1813,33 @@ PAL_ItemUseMenu(
 
          PAL_DrawText(PAL_GetWord(gpGlobals->g.PlayerRoles.rgwName[gpGlobals->rgParty[i].wPlayerRole]),
             PAL_XY(125, 16 + 20 * i), bColor, TRUE, FALSE, FALSE);
+
+         if (i == sSelectedPlayer && fRolePrimed)
+         {
+            LPCBITMAPRLE lpLockCur = PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR_YELLOW);
+            if (lpLockCur != NULL)
+            {
+               PAL_RLEBlitToSurface(lpLockCur, gpScreen, PAL_XY(180, 21 + 20 * i));
+            }
+         }
       }
 
+#if defined(__IOS__)
+      {
+         LPCBITMAPRLE pItemBox = PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_ITEMBOX);
+         PAL_DrawHextechBoxToScreen(
+            120,
+            80,
+            pItemBox ? PAL_RLEGetWidth(pItemBox) : 70,
+            pItemBox ? PAL_RLEGetHeight(pItemBox) : 60,
+            4,
+            0
+         );
+      }
+#else
       PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_ITEMBOX), gpScreen,
          PAL_XY(120, 80));
+#endif
 
       i = PAL_GetItemAmount(wItemToUse);
 
@@ -1457,16 +1900,60 @@ PAL_ItemUseMenu(
 
          PAL_ProcessEvent();
 
+         {
+            INT tapX = 0, tapY = 0;
+            if (PAL_TouchPollTap(&tapX, &tapY))
+            {
+               BOOL fHandled = FALSE;
+               for (int p = 0; p <= gpGlobals->wMaxPartyMemberIndex; p++)
+               {
+                  int py = 16 + 20 * p;
+                  if (tapX >= 112 && tapX <= 198 && tapY >= py - 3 && tapY <= py + 17)
+                  {
+                     if (p == sSelectedPlayer && fRolePrimed)
+                     {
+                        // 2nd tap on highlighted player -> Confirm item use!
+                        g_InputState.dwKeyPress |= kKeySearch;
+                     }
+                     else
+                     {
+                        // 1st tap -> Highlight player & preview stats!
+                        sSelectedPlayer = (SHORT)p;
+                        fRolePrimed = TRUE;
+                        fHandled = TRUE;
+                     }
+                     break;
+                  }
+               }
+               if (!fHandled && g_InputState.dwKeyPress == 0)
+               {
+                  if (fRolePrimed && tapX >= 114 && tapX <= 188 && tapY >= 76 && tapY <= 162)
+                  {
+                     g_InputState.dwKeyPress |= kKeySearch;
+                  }
+                  else if (tapX < 105 || tapY > 184)
+                  {
+                     g_InputState.dwKeyPress |= kKeyMenu;
+                  }
+               }
+               if (fHandled)
+               {
+                  break;
+               }
+            }
+         }
+
          if (g_InputState.dwKeyPress != 0)
          {
             break;
          }
 
-         SDL_Delay(1);
+         SDL_Delay(5);
       }
 
       if (i <= 0)
       {
+         PAL_TouchSetMode(prevTouchMode);
          return MENUITEM_VALUE_CANCELLED;
       }
 
@@ -1492,10 +1979,12 @@ PAL_ItemUseMenu(
       }
       else if (g_InputState.dwKeyPress & kKeySearch)
       {
+         PAL_TouchSetMode(prevTouchMode);
          return gpGlobals->rgParty[sSelectedPlayer].wPlayerRole;
       }
    }
 
+   PAL_TouchSetMode(prevTouchMode);
    return MENUITEM_VALUE_CANCELLED;
 }
 
@@ -1529,6 +2018,19 @@ PAL_BuyMenu_OnItemChange(
    //
    x = 40, y = 8;
 
+#if defined(__IOS__)
+   {
+      LPCBITMAPRLE pItemBox = PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_ITEMBOX);
+      PAL_DrawHextechBoxToScreen(
+         x,
+         y,
+         pItemBox ? PAL_RLEGetWidth(pItemBox) : 70,
+         pItemBox ? PAL_RLEGetHeight(pItemBox) : 60,
+         __buymenu_firsttime_render ? 4 : 0,
+         0
+      );
+   }
+#else
    if( __buymenu_firsttime_render )
       PAL_RLEBlitToSurfaceWithShadow(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_ITEMBOX), gpScreen, PAL_XY(x + 6, y + 6), TRUE);
    //
@@ -1536,6 +2038,7 @@ PAL_BuyMenu_OnItemChange(
    //
    PAL_RLEBlitToSurface(PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_ITEMBOX), gpScreen,
       PAL_XY(x, y));
+#endif
 
    //
    // Prepare item pos
@@ -1816,7 +2319,10 @@ PAL_EquipItemMenu(
    int              iCurrentPlayer, i;
    BYTE             bColor, bSelectedColor;
    DWORD            dwColorChangeTime;
+   PALTOUCHMODE     prevTouchMode = PAL_TouchGetMode();
 
+   PAL_TouchSetMode(kTouchModeMenu);
+   PAL_TouchClearGestures();
    gpGlobals->wLastUnequippedItem = wItem;
 
    PAL_MKFDecompressChunk(bufBackground, 320 * 200, EQUIPMENU_BACKGROUND_FBPNUM,
@@ -1850,6 +2356,7 @@ PAL_EquipItemMenu(
       }
    }
 
+   BOOL             fEquipRolePrimed = (gpGlobals->wMaxPartyMemberIndex == 0);
    iCurrentPlayer = 0;
    bSelectedColor = MENUITEM_COLOR_SELECTED_FIRST;
    dwColorChangeTime = SDL_GetTicks() + (600 / MENUITEM_COLOR_SELECTED_TOTALNUM);
@@ -1951,6 +2458,16 @@ PAL_EquipItemMenu(
 
          PAL_DrawText(PAL_GetWord(gpGlobals->g.PlayerRoles.rgwName[w]),
             PAL_XY_OFFSET(gConfig.ScreenLayout.EquipRoleListBox, 13, 13 + 18 * i), bColor, TRUE, FALSE, FALSE);
+
+         if (i == iCurrentPlayer && fEquipRolePrimed)
+         {
+            LPCBITMAPRLE lpEqCur = PAL_SpriteGetFrame(gpSpriteUI, SPRITENUM_CURSOR_YELLOW);
+            if (lpEqCur != NULL)
+            {
+               PAL_RLEBlitToSurface(lpEqCur, gpScreen,
+                  PAL_XY_OFFSET(gConfig.ScreenLayout.EquipRoleListBox, 68, 18 + 18 * i));
+            }
+         }
       }
 
       //
@@ -2005,16 +2522,65 @@ PAL_EquipItemMenu(
             }
          }
 
+         {
+            INT tapX = 0, tapY = 0;
+            INT swipe = PAL_TouchPollHorizSwipe();
+            if (swipe != 0 && gpGlobals->wMaxPartyMemberIndex > 0)
+            {
+               if (swipe < 0)
+                  iCurrentPlayer = (iCurrentPlayer + 1) % (gpGlobals->wMaxPartyMemberIndex + 1);
+               else
+                  iCurrentPlayer = (iCurrentPlayer > 0) ? (iCurrentPlayer - 1) : gpGlobals->wMaxPartyMemberIndex;
+               break;
+            }
+            if (PAL_TouchPollTap(&tapX, &tapY))
+            {
+               int rbx = PAL_X(gConfig.ScreenLayout.EquipRoleListBox);
+               int rby = PAL_Y(gConfig.ScreenLayout.EquipRoleListBox);
+               BOOL fRoleSwitched = FALSE;
+               for (int p = 0; p <= gpGlobals->wMaxPartyMemberIndex; p++)
+               {
+                  int py = rby + 13 + 18 * p;
+                  if (tapX >= rbx && tapX <= rbx + 90 && tapY >= py - 4 && tapY <= py + 16)
+                  {
+                     if (p == iCurrentPlayer && fEquipRolePrimed)
+                     {
+                        g_InputState.dwKeyPress |= kKeySearch;
+                     }
+                     else
+                     {
+                        iCurrentPlayer = p;
+                        fEquipRolePrimed = TRUE;
+                        fRoleSwitched = TRUE;
+                     }
+                     break;
+                  }
+               }
+               if (!fRoleSwitched && g_InputState.dwKeyPress == 0)
+               {
+                  if (fEquipRolePrimed && tapX >= 4 && tapX <= 86 && tapY >= 4 && tapY <= 88)
+                  {
+                     g_InputState.dwKeyPress |= kKeySearch;
+                  }
+               }
+               if (fRoleSwitched)
+               {
+                  break;
+               }
+            }
+         }
+
          if (g_InputState.dwKeyPress != 0)
          {
             break;
          }
 
-         SDL_Delay(1);
+         SDL_Delay(5);
       }
 
       if (wItem == 0)
       {
+         PAL_TouchSetMode(prevTouchMode);
          return;
       }
 
@@ -2036,6 +2602,7 @@ PAL_EquipItemMenu(
       }
       else if (g_InputState.dwKeyPress & kKeyMenu)
       {
+         PAL_TouchSetMode(prevTouchMode);
          return;
       }
       else if (g_InputState.dwKeyPress & kKeySearch)
